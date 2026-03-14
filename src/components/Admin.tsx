@@ -1,13 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../firebase';
-import { collection, query, getDocs, updateDoc, doc, orderBy, limit, addDoc, setDoc, getDoc, deleteDoc } from 'firebase/firestore';
-import { Order, Product } from '../types';
-import { PRODUCTS } from '../constants';
+import { collection, query, getDocs, updateDoc, doc, orderBy, limit, addDoc, setDoc, getDoc, deleteDoc, Timestamp, onSnapshot } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { storage } from '../firebase';
+import { Order, Product, Category, Slide, FrontendContent } from '../types';
+import { PRODUCTS, CATEGORIES } from '../constants';
 import { 
   Users, ShoppingBag, TrendingUp, Package, 
   CheckCircle, Clock, Truck, XCircle, 
-  Plus, Edit, Trash2, Search, Settings, Bell
+  Plus, Edit, Trash2, Search, Settings, Bell,
+  Upload, Image as ImageIcon, LayoutDashboard,
+  ChevronRight, MoreVertical, Filter, Download, Loader2,
+  Tag, Layers, Monitor, Play, Eye, EyeOff
 } from 'lucide-react';
 import socket from '../socket';
 import { UserProfile, AppSettings } from '../types';
@@ -15,6 +20,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'motion/react';
+import { handleFirestoreError, OperationType } from '../utils/firestore-errors';
 
 export const Admin = () => {
   const { isAdmin } = useAuth();
@@ -23,10 +29,34 @@ export const Admin = () => {
   const [loading, setLoading] = useState(true);
   const [permissionError, setPermissionError] = useState(false);
   const [isPromoting, setIsPromoting] = useState(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'orders' | 'products' | 'users' | 'settings'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'orders' | 'products' | 'categories' | 'users' | 'settings' | 'frontend'>('dashboard');
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showToast, setShowToast] = useState<any>(null);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [isAddingCategory, setIsAddingCategory] = useState(false);
+  const [newCategory, setNewCategory] = useState<Partial<Category>>({
+    name: '',
+    description: '',
+    image: ''
+  });
+  const [editingCategory, setEditingCategory] = useState<Category | null>(null);
+  const [frontendContent, setFrontendContent] = useState<FrontendContent>({
+    slides: [],
+    featuredSections: []
+  });
+  const [isAddingSlide, setIsAddingSlide] = useState(false);
+  const [editingSlide, setEditingSlide] = useState<Slide | null>(null);
+  const [editingSection, setEditingSection] = useState<{id: string, title: string, subtitle: string, active: boolean} | null>(null);
+  const [newSlide, setNewSlide] = useState<Partial<Slide>>({
+    title: '',
+    subtitle: '',
+    description: '',
+    image: '',
+    link: '/shop',
+    buttonText: 'Découvrir',
+    active: true
+  });
   const [settings, setSettings] = useState<AppSettings>({
     siteName: 'VENTOUT',
     logo: 'https://ais-pre-rwo65hk33mxz32suosmmx3-137105490329.europe-west3.run.app/logo.png',
@@ -34,16 +64,56 @@ export const Admin = () => {
     contactEmail: 'contact@ventout.fr'
   });
   const [isAddingProduct, setIsAddingProduct] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [newProduct, setNewProduct] = useState<Partial<Product>>({
     name: '',
     price: 0,
     category: 'cuisine',
     brand: '',
     description: '',
-    image: 'https://picsum.photos/seed/appliance/400/400',
+    image: 'https://images.unsplash.com/photo-1584622650111-993a426fbf0a?auto=format&fit=crop&q=80&w=800',
     stock: 10,
     specs: {}
   });
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    try {
+      const storageRef = ref(storage, `products/${Date.now()}_${file.name}`);
+      await uploadBytes(storageRef, file);
+      const url = await getDownloadURL(storageRef);
+      setNewProduct(prev => ({ ...prev, image: url }));
+      alert("Image du produit téléchargée !");
+    } catch (error) {
+      console.error("Upload error:", error);
+      alert("Erreur lors du téléchargement");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleCategoryImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    try {
+      const storageRef = ref(storage, `categories/${Date.now()}_${file.name}`);
+      await uploadBytes(storageRef, file);
+      const url = await getDownloadURL(storageRef);
+      setNewCategory(prev => ({ ...prev, image: url }));
+      alert("Image de catégorie téléchargée !");
+    } catch (error) {
+      console.error("Upload error:", error);
+      alert("Erreur lors du téléchargement");
+    } finally {
+      setUploading(false);
+    }
+  };
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -69,37 +139,66 @@ export const Admin = () => {
   useEffect(() => {
     if (!isAdmin) return;
 
-    const fetchData = async () => {
-      try {
-        const ordersSnap = await getDocs(query(collection(db, 'orders'), orderBy('createdAt', 'desc')));
-        const ordersData = ordersSnap.docs.map(d => ({ id: d.id, ...d.data() } as Order));
-        setOrders(ordersData);
+    setLoading(true);
 
-        const productsSnap = await getDocs(collection(db, 'products'));
-        const productsData = productsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Product));
-        setProducts(productsData.length > 0 ? productsData : PRODUCTS);
-
-        const usersSnap = await getDocs(collection(db, 'users'));
-        const usersData = usersSnap.docs.map(d => ({ id: d.id, ...d.data() } as UserProfile));
-        setAllUsers(usersData);
-
-        const settingsSnap = await getDoc(doc(db, 'settings', 'general'));
-        if (settingsSnap.exists()) {
-          setSettings(settingsSnap.data() as AppSettings);
-        }
-      } catch (error: any) {
-        console.error("Error fetching admin data:", error);
-        if (error.code === 'permission-denied' || error.message?.includes('permissions')) {
-          setPermissionError(true);
-        } else if (error.message.includes("offline")) {
-          alert("Impossible de charger les données car vous semblez être hors ligne.");
-        }
-      } finally {
+    // Real-time listeners
+    const unsubOrders = onSnapshot(query(collection(db, 'orders'), orderBy('createdAt', 'desc')), 
+      (snap) => {
+        setOrders(snap.docs.map(d => ({ id: d.id, ...d.data() } as Order)));
         setLoading(false);
-      }
-    };
+      },
+      (err) => handleFirestoreError(err, OperationType.GET, 'orders')
+    );
 
-    fetchData();
+    const unsubProducts = onSnapshot(collection(db, 'products'), 
+      (snap) => {
+        const productsData = snap.docs.map(d => ({ id: d.id, ...d.data() } as Product));
+        setProducts(productsData.length > 0 ? productsData : []);
+      },
+      (err) => handleFirestoreError(err, OperationType.GET, 'products')
+    );
+
+    const unsubUsers = onSnapshot(collection(db, 'users'), 
+      (snap) => {
+        setAllUsers(snap.docs.map(d => ({ id: d.id, ...d.data() } as UserProfile)));
+      },
+      (err) => handleFirestoreError(err, OperationType.GET, 'users')
+    );
+
+    const unsubCategories = onSnapshot(collection(db, 'categories'), 
+      (snap) => {
+        const catsData = snap.docs.map(d => ({ id: d.id, ...d.data() } as Category));
+        setCategories(catsData.length > 0 ? catsData : CATEGORIES);
+      },
+      (err) => handleFirestoreError(err, OperationType.GET, 'categories')
+    );
+
+    const unsubSettings = onSnapshot(doc(db, 'settings', 'general'), 
+      (snap) => {
+        if (snap.exists()) {
+          setSettings(snap.data() as AppSettings);
+        }
+      },
+      (err) => handleFirestoreError(err, OperationType.GET, 'settings/general')
+    );
+
+    const unsubFrontend = onSnapshot(doc(db, 'settings', 'frontend'), 
+      (snap) => {
+        if (snap.exists()) {
+          setFrontendContent(snap.data() as FrontendContent);
+        }
+      },
+      (err) => handleFirestoreError(err, OperationType.GET, 'settings/frontend')
+    );
+
+    return () => {
+      unsubOrders();
+      unsubProducts();
+      unsubUsers();
+      unsubCategories();
+      unsubSettings();
+      unsubFrontend();
+    };
   }, [isAdmin]);
 
   const updateOrderStatus = async (orderId: string, newStatus: Order['status']) => {
@@ -125,6 +224,36 @@ export const Admin = () => {
     } catch (error) {
       console.error("Error deleting product:", error);
       alert("Erreur lors de la suppression");
+    }
+  };
+
+  const seedDatabase = async () => {
+    if (!window.confirm("Voulez-vous importer les produits et catégories par défaut dans la base de données ?")) return;
+    setLoading(true);
+    try {
+      // Seed Categories
+      for (const category of CATEGORIES) {
+        const { id, ...catData } = category;
+        await setDoc(doc(db, 'categories', id), {
+          ...catData,
+          createdAt: Date.now()
+        });
+      }
+
+      // Seed Products
+      for (const product of PRODUCTS) {
+        const { id, ...productData } = product;
+        await addDoc(collection(db, 'products'), {
+          ...productData,
+          createdAt: Date.now()
+        });
+      }
+      alert("Base de données initialisée !");
+    } catch (error) {
+      console.error("Error seeding database:", error);
+      alert("Erreur lors de l'initialisation");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -212,20 +341,182 @@ export const Admin = () => {
 
   const handleAddProduct = async (e: React.FormEvent) => {
     e.preventDefault();
+    setUploading(true);
     try {
-      const productRef = await addDoc(collection(db, 'products'), {
+      const productData = {
         ...newProduct,
-        createdAt: Date.now(),
-        rating: 5,
-        reviewsCount: 0
-      });
-      setProducts([{ id: productRef.id, ...newProduct } as Product, ...products]);
-      alert("Produit ajouté avec succès !");
+        updatedAt: Date.now()
+      };
+
+      if (editingProduct) {
+        await updateDoc(doc(db, 'products', editingProduct.id), productData);
+        alert("Produit mis à jour !");
+      } else {
+        await addDoc(collection(db, 'products'), {
+          ...productData,
+          createdAt: Date.now(),
+          rating: 5,
+          reviewsCount: 0
+        });
+        alert("Produit ajouté avec succès !");
+      }
       setIsAddingProduct(false);
+      setEditingProduct(null);
+      setNewProduct({
+        name: '',
+        price: 0,
+        category: categories[0]?.id || 'cuisine',
+        brand: '',
+        description: '',
+        image: 'https://images.unsplash.com/photo-1584622650111-993a426fbf0a?auto=format&fit=crop&q=80&w=800',
+        stock: 10,
+        specs: {}
+      });
     } catch (error) {
-      console.error("Error adding product:", error);
-      alert("Erreur lors de l'ajout du produit");
+      console.error("Error saving product:", error);
+      alert("Erreur lors de l'enregistrement du produit");
+    } finally {
+      setUploading(false);
     }
+  };
+
+  const handleAddCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      if (editingCategory) {
+        await updateDoc(doc(db, 'categories', editingCategory.id), {
+          ...newCategory,
+          updatedAt: Date.now()
+        });
+        alert("Catégorie mise à jour !");
+      } else {
+        await addDoc(collection(db, 'categories'), {
+          ...newCategory,
+          createdAt: Date.now()
+        });
+        alert("Catégorie ajoutée !");
+      }
+      setIsAddingCategory(false);
+      setEditingCategory(null);
+      setNewCategory({ name: '', description: '', image: '' });
+    } catch (error) {
+      console.error("Error saving category:", error);
+      alert("Erreur lors de l'enregistrement de la catégorie");
+    }
+  };
+
+  const deleteCategory = async (id: string) => {
+    if (!window.confirm("Supprimer cette catégorie ?")) return;
+    try {
+      await deleteDoc(doc(db, 'categories', id));
+      alert("Catégorie supprimée");
+    } catch (error) {
+      console.error("Error deleting category:", error);
+    }
+  };
+
+  const updateUserRole = async (userId: string, newRole: 'admin' | 'user') => {
+    try {
+      await updateDoc(doc(db, 'users', userId), { role: newRole });
+      alert(`Rôle mis à jour avec succès : ${newRole}`);
+    } catch (error) {
+      console.error("Error updating role:", error);
+      handleFirestoreError(error, OperationType.UPDATE, `users/${userId}`);
+    }
+  };
+
+  const handleSlideImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    try {
+      const storageRef = ref(storage, `slides/${Date.now()}_${file.name}`);
+      await uploadBytes(storageRef, file);
+      const url = await getDownloadURL(storageRef);
+      setNewSlide(prev => ({ ...prev, image: url }));
+      alert("Image du slide téléchargée !");
+    } catch (error) {
+      console.error("Upload error:", error);
+      alert("Erreur lors du téléchargement");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const saveFrontendContent = async (updatedContent: FrontendContent) => {
+    try {
+      await setDoc(doc(db, 'settings', 'frontend'), updatedContent);
+      alert("Contenu frontend mis à jour !");
+    } catch (error) {
+      console.error("Error saving frontend content:", error);
+      handleFirestoreError(error, OperationType.UPDATE, 'settings/frontend');
+    }
+  };
+
+  const addOrUpdateSlide = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const slideToSave = {
+      ...newSlide,
+      id: editingSlide?.id || Date.now().toString()
+    } as Slide;
+
+    let updatedSlides = [...frontendContent.slides];
+    if (editingSlide) {
+      updatedSlides = updatedSlides.map(s => s.id === editingSlide.id ? slideToSave : s);
+    } else {
+      updatedSlides.push(slideToSave);
+    }
+
+    await saveFrontendContent({ ...frontendContent, slides: updatedSlides });
+    setIsAddingSlide(false);
+    setEditingSlide(null);
+  };
+
+  const deleteSlide = async (slideId: string) => {
+    if (!window.confirm("Supprimer ce slide ?")) return;
+    const updatedSlides = frontendContent.slides.filter(s => s.id !== slideId);
+    await saveFrontendContent({ ...frontendContent, slides: updatedSlides });
+  };
+
+  const toggleSlideStatus = async (slideId: string) => {
+    const updatedSlides = frontendContent.slides.map(s => 
+      s.id === slideId ? { ...s, active: !s.active } : s
+    );
+    await saveFrontendContent({ ...frontendContent, slides: updatedSlides });
+  };
+
+  const toggleSectionStatus = async (sectionId: string) => {
+    const updatedSections = frontendContent.featuredSections.map(s => 
+      s.id === sectionId ? { ...s, active: !s.active } : s
+    );
+    await saveFrontendContent({ ...frontendContent, featuredSections: updatedSections });
+  };
+
+  const updateSection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingSection) return;
+
+    const updatedSections = frontendContent.featuredSections.map(s => 
+      s.id === editingSection.id ? editingSection : s
+    );
+    await saveFrontendContent({ ...frontendContent, featuredSections: updatedSections });
+    setEditingSection(null);
+  };
+
+  const startEdit = (product: Product) => {
+    setEditingProduct(product);
+    setNewProduct({
+      name: product.name,
+      price: product.price,
+      category: product.category,
+      brand: product.brand,
+      description: product.description,
+      image: product.image,
+      stock: product.stock,
+      specs: product.specs
+    });
+    setIsAddingProduct(true);
   };
 
   const handleUpdateSettings = async (e: React.FormEvent) => {
@@ -265,43 +556,61 @@ export const Admin = () => {
       </AnimatePresence>
 
       <div className="flex flex-col lg:flex-row gap-10">
-        <aside className="w-full lg:w-64 flex-shrink-0">
-          <div className="bg-slate-950 rounded-3xl p-6 text-white sticky top-24">
-            <h2 className="text-xl font-black uppercase italic mb-8 px-4 tracking-tighter">Admin Panel</h2>
-            <nav className="space-y-2">
+        <aside className="w-full lg:w-72 flex-shrink-0">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-sm border border-slate-200 dark:border-primary/10 sticky top-24">
+            <div className="flex items-center gap-3 mb-10 px-4">
+              <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center text-white font-black italic">V</div>
+              <h2 className="text-xl font-black uppercase italic tracking-tighter">Admin Panel</h2>
+            </div>
+            
+            <nav className="space-y-1">
               <button 
                 onClick={() => setActiveTab('dashboard')}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'dashboard' ? 'bg-primary text-white font-bold' : 'text-slate-400 hover:bg-white/5'}`}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'dashboard' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
               >
-                <TrendingUp className="w-5 h-5" /> Dashboard
+                <LayoutDashboard className="w-5 h-5" /> Dashboard
               </button>
               <button 
                 onClick={() => setActiveTab('orders')}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'orders' ? 'bg-primary text-white font-bold' : 'text-slate-400 hover:bg-white/5'}`}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'orders' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
               >
                 <ShoppingBag className="w-5 h-5" /> Commandes
                 {stats.pendingOrders > 0 && (
-                  <span className="ml-auto bg-white text-primary text-[10px] font-black px-2 py-0.5 rounded-full">{stats.pendingOrders}</span>
+                  <span className="ml-auto bg-red-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full">{stats.pendingOrders}</span>
                 )}
               </button>
               <button 
                 onClick={() => setActiveTab('products')}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'products' ? 'bg-primary text-white font-bold' : 'text-slate-400 hover:bg-white/5'}`}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'products' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
               >
                 <Package className="w-5 h-5" /> Produits
               </button>
               <button 
+                onClick={() => setActiveTab('categories')}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'categories' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+              >
+                <Tag className="w-5 h-5" /> Catégories
+              </button>
+              <button 
                 onClick={() => setActiveTab('users')}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'users' ? 'bg-primary text-white font-bold' : 'text-slate-400 hover:bg-white/5'}`}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'users' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
               >
                 <Users className="w-5 h-5" /> Utilisateurs
               </button>
               <button 
-                onClick={() => setActiveTab('settings')}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'settings' ? 'bg-primary text-white font-bold' : 'text-slate-400 hover:bg-white/5'}`}
+                onClick={() => setActiveTab('frontend')}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'frontend' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
               >
-                <Settings className="w-5 h-5" /> Paramètres
+                <Monitor className="w-5 h-5" /> Frontend
               </button>
+              <div className="pt-4 mt-4 border-t border-slate-100 dark:border-slate-800">
+                <button 
+                  onClick={() => setActiveTab('settings')}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'settings' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                >
+                  <Settings className="w-5 h-5" /> Paramètres
+                </button>
+              </div>
             </nav>
           </div>
           
@@ -371,264 +680,892 @@ export const Admin = () => {
           )}
 
           {activeTab === 'orders' && (
-            <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-primary/20 overflow-hidden shadow-sm">
-              <div className="p-8 border-b border-slate-100 dark:border-primary/10 flex justify-between items-center">
-                <h3 className="text-xl font-black uppercase italic">Gestion des Commandes</h3>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                  <input type="text" placeholder="Rechercher..." className="pl-10 pr-4 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border-none text-sm outline-none w-64" />
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                  <h3 className="text-2xl font-black uppercase italic tracking-tight">Gestion des Commandes</h3>
+                  <p className="text-sm text-slate-500">Suivez et gérez les commandes clients</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-primary/20 px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 hover:bg-slate-50 transition-colors">
+                    <Download className="w-4 h-4" /> Exporter
+                  </button>
                 </div>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead className="bg-slate-50 dark:bg-slate-800/50 text-xs font-bold uppercase tracking-widest text-slate-500">
-                    <tr>
-                      <th className="px-8 py-4">Client</th>
-                      <th className="px-8 py-4">Date</th>
-                      <th className="px-8 py-4">Total</th>
-                      <th className="px-8 py-4">Statut</th>
-                      <th className="px-8 py-4 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-primary/5">
-                    {orders.map(order => (
-                      <tr key={order.id} className="hover:bg-slate-50/50 dark:hover:bg-primary/5 transition-colors">
-                        <td className="px-8 py-6">
-                          <p className="font-bold text-sm">{order.userName}</p>
-                          <p className="text-xs text-slate-500">{order.userEmail}</p>
-                        </td>
-                        <td className="px-8 py-6 text-sm">
-                          {format(order.createdAt, 'dd/MM/yyyy HH:mm')}
-                        </td>
-                        <td className="px-8 py-6 font-black">
-                          {order.total.toLocaleString()} CFA
-                        </td>
-                        <td className="px-8 py-6">
-                          <select 
-                            value={order.status}
-                            onChange={(e) => updateOrderStatus(order.id, e.target.value as Order['status'])}
-                            className={`text-[10px] font-black uppercase px-3 py-1.5 rounded-full border-none outline-none cursor-pointer ${
-                              order.status === 'pending' ? 'bg-amber-100 text-amber-600' :
-                              order.status === 'processing' ? 'bg-blue-100 text-blue-600' :
-                              order.status === 'shipped' ? 'bg-indigo-100 text-indigo-600' :
-                              order.status === 'delivered' ? 'bg-green-100 text-green-600' :
-                              'bg-red-100 text-red-600'
-                            }`}
-                          >
-                            <option value="pending">En attente</option>
-                            <option value="processing">Préparation</option>
-                            <option value="shipped">Expédiée</option>
-                            <option value="delivered">Livrée</option>
-                            <option value="cancelled">Annulée</option>
-                          </select>
-                        </td>
-                        <td className="px-8 py-6 text-right">
-                          <button className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">
-                            <Edit className="w-4 h-4 text-slate-400" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
 
-          {activeTab === 'products' && (
-            <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-primary/20 overflow-hidden shadow-sm">
-              <div className="p-8 border-b border-slate-100 dark:border-primary/10 flex justify-between items-center">
-                <h3 className="text-xl font-black uppercase italic">Inventaire Produits</h3>
-                <button 
-                  onClick={() => setIsAddingProduct(true)}
-                  className="bg-primary text-white px-6 py-2 rounded-xl font-bold text-sm flex items-center gap-2 hover:scale-105 transition-transform"
-                >
-                  <Plus className="w-4 h-4" /> Ajouter un Produit
-                </button>
-              </div>
-              
-              {isAddingProduct ? (
-                <form onSubmit={handleAddProduct} className="p-8 space-y-6 max-w-2xl">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Nom du Produit</label>
-                      <input required type="text" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl px-4 py-3 text-sm outline-none" value={newProduct.name} onChange={e => setNewProduct({...newProduct, name: e.target.value})} />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Marque</label>
-                      <input required type="text" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl px-4 py-3 text-sm outline-none" value={newProduct.brand} onChange={e => setNewProduct({...newProduct, brand: e.target.value})} />
+              <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-primary/20 overflow-hidden shadow-sm">
+                <div className="p-6 border-b border-slate-100 dark:border-primary/10 flex flex-col sm:flex-row gap-4 justify-between items-center">
+                  <div className="relative w-full sm:w-96">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input type="text" placeholder="Rechercher une commande..." className="w-full pl-12 pr-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border-none text-sm outline-none focus:ring-2 ring-primary/20" />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
+                      <button className="px-4 py-1.5 rounded-lg text-xs font-bold bg-white dark:bg-slate-700 shadow-sm">Toutes</button>
+                      <button className="px-4 py-1.5 rounded-lg text-xs font-bold text-slate-500 hover:text-primary">En attente</button>
+                      <button className="px-4 py-1.5 rounded-lg text-xs font-bold text-slate-500 hover:text-primary">Livrées</button>
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Prix (€)</label>
-                      <input required type="number" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl px-4 py-3 text-sm outline-none" value={newProduct.price} onChange={e => setNewProduct({...newProduct, price: Number(e.target.value)})} />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Stock</label>
-                      <input required type="number" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl px-4 py-3 text-sm outline-none" value={newProduct.stock} onChange={e => setNewProduct({...newProduct, stock: Number(e.target.value)})} />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Catégorie</label>
-                      <select required className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl px-4 py-3 text-sm outline-none" value={newProduct.category} onChange={e => setNewProduct({...newProduct, category: e.target.value})}>
-                        <option value="cuisine">Cuisine</option>
-                        <option value="buanderie">Buanderie</option>
-                        <option value="froid">Froid</option>
-                        <option value="petit-electromenager">Petit Électroménager</option>
-                      </select>
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-xs font-bold uppercase tracking-widest text-slate-500">URL de l'Image</label>
-                      <input required type="url" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl px-4 py-3 text-sm outline-none" value={newProduct.image} onChange={e => setNewProduct({...newProduct, image: e.target.value})} />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Description</label>
-                    <textarea required className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl px-4 py-3 text-sm outline-none h-24" value={newProduct.description} onChange={e => setNewProduct({...newProduct, description: e.target.value})}></textarea>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Spécifications (JSON)</label>
-                    <textarea placeholder='{"Couleur": "Blanc", "Garantie": "2 ans"}' className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl px-4 py-3 text-sm outline-none h-24 font-mono" onChange={e => {
-                      try {
-                        const specs = JSON.parse(e.target.value);
-                        setNewProduct({...newProduct, specs});
-                      } catch (err) {
-                        // Invalid JSON, don't update yet
-                      }
-                    }}></textarea>
-                  </div>
-                  <div className="flex gap-4">
-                    <button type="submit" className="bg-primary text-white px-8 py-3 rounded-xl font-bold text-sm uppercase tracking-widest">Enregistrer</button>
-                    <button type="button" onClick={() => setIsAddingProduct(false)} className="bg-slate-100 dark:bg-slate-800 text-slate-500 px-8 py-3 rounded-xl font-bold text-sm uppercase tracking-widest">Annuler</button>
-                  </div>
-                </form>
-              ) : (
+                </div>
+
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse">
-                    <thead className="bg-slate-50 dark:bg-slate-800/50 text-xs font-bold uppercase tracking-widest text-slate-500">
+                    <thead className="bg-slate-50 dark:bg-slate-800/50 text-[10px] font-black uppercase tracking-widest text-slate-400">
                       <tr>
-                        <th className="px-8 py-4">Produit</th>
-                        <th className="px-8 py-4">Catégorie</th>
-                        <th className="px-8 py-4">Prix</th>
-                        <th className="px-8 py-4">Stock</th>
-                        <th className="px-8 py-4 text-right">Actions</th>
+                        <th className="px-8 py-5">Client</th>
+                        <th className="px-8 py-5">Date</th>
+                        <th className="px-8 py-5">Total</th>
+                        <th className="px-8 py-5">Statut</th>
+                        <th className="px-8 py-5 text-right">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-primary/5">
-                      {products.map(product => (
-                        <tr key={product.id} className="hover:bg-slate-50/50 dark:hover:bg-primary/5 transition-colors">
+                      {orders.map(order => (
+                        <tr key={order.id} className="group hover:bg-slate-50/50 dark:hover:bg-primary/5 transition-colors">
                           <td className="px-8 py-6">
                             <div className="flex items-center gap-3">
-                              <img src={product.image} alt="" className="w-10 h-10 object-contain bg-white rounded-lg p-1" />
+                              <div className="w-10 h-10 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center text-primary font-black text-xs">
+                                {order.userName.charAt(0)}
+                              </div>
                               <div>
-                                <p className="font-bold text-sm">{product.name}</p>
-                                <p className="text-xs text-slate-500">{product.brand}</p>
+                                <p className="font-bold text-sm leading-none mb-1">{order.userName}</p>
+                                <p className="text-xs text-slate-400">{order.userEmail}</p>
                               </div>
                             </div>
                           </td>
-                          <td className="px-8 py-6 text-sm uppercase tracking-widest font-bold text-slate-400">{product.category}</td>
-                          <td className="px-8 py-6 font-black">{product.price.toLocaleString()} CFA</td>
-                          <td className="px-8 py-6">
-                            <span className={`text-xs font-bold px-2 py-1 rounded-full ${product.stock < 10 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
-                              {product.stock} en stock
-                            </span>
+                          <td className="px-8 py-6 text-sm text-slate-500 font-medium">
+                            {format(order.createdAt, 'dd MMM yyyy', { locale: fr })}
+                            <span className="block text-[10px] text-slate-400">{format(order.createdAt, 'HH:mm')}</span>
                           </td>
-                          <td className="px-8 py-6 text-right space-x-2">
-                            <button className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"><Edit className="w-4 h-4 text-slate-400" /></button>
-                            <button onClick={() => deleteProduct(product.id)} className="p-2 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"><Trash2 className="w-4 h-4 text-red-400" /></button>
+                          <td className="px-8 py-6 font-black text-slate-900 dark:text-white">
+                            {order.total.toLocaleString()} CFA
+                          </td>
+                          <td className="px-8 py-6">
+                            <select 
+                              value={order.status}
+                              onChange={(e) => updateOrderStatus(order.id, e.target.value as Order['status'])}
+                              className={`text-[10px] font-black uppercase px-3 py-1.5 rounded-full border-none outline-none cursor-pointer transition-all ${
+                                order.status === 'pending' ? 'bg-amber-100 text-amber-600' :
+                                order.status === 'processing' ? 'bg-blue-100 text-blue-600' :
+                                order.status === 'shipped' ? 'bg-indigo-100 text-indigo-600' :
+                                order.status === 'delivered' ? 'bg-green-100 text-green-600' :
+                                'bg-red-100 text-red-600'
+                              }`}
+                            >
+                              <option value="pending">En attente</option>
+                              <option value="processing">Préparation</option>
+                              <option value="shipped">Expédiée</option>
+                              <option value="delivered">Livrée</option>
+                              <option value="cancelled">Annulée</option>
+                            </select>
+                          </td>
+                          <td className="px-8 py-6 text-right">
+                            <button className="p-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl text-slate-400 hover:text-primary transition-all">
+                              <MoreVertical className="w-4 h-4" />
+                            </button>
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-              )}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'products' && (
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                  <h3 className="text-2xl font-black uppercase italic tracking-tight">Inventaire Produits</h3>
+                  <p className="text-sm text-slate-500">Gérez votre catalogue et vos stocks</p>
+                </div>
+                <button 
+                  onClick={() => {
+                    setEditingProduct(null);
+                    setNewProduct({
+                      name: '',
+                      price: 0,
+                      category: 'cuisine',
+                      brand: '',
+                      description: '',
+                      image: '',
+                      stock: 10,
+                      specs: {}
+                    });
+                    setIsAddingProduct(true);
+                  }}
+                  className="bg-primary text-white px-6 py-3 rounded-2xl font-bold text-sm flex items-center gap-2 hover:scale-105 transition-transform shadow-lg shadow-primary/20"
+                >
+                  <Plus className="w-5 h-5" /> Nouveau Produit
+                </button>
+              </div>
+
+              <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-primary/20 overflow-hidden shadow-sm">
+                <div className="p-6 border-b border-slate-100 dark:border-primary/10 flex flex-col sm:flex-row gap-4 justify-between items-center">
+                  <div className="relative w-full sm:w-96">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input type="text" placeholder="Rechercher un produit..." className="w-full pl-12 pr-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border-none text-sm outline-none focus:ring-2 ring-primary/20" />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl text-slate-500 hover:text-primary transition-colors">
+                      <Filter className="w-5 h-5" />
+                    </button>
+                    <button className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl text-slate-500 hover:text-primary transition-colors">
+                      <Download className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead className="bg-slate-50 dark:bg-slate-800/50 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                      <tr>
+                        <th className="px-8 py-5">Produit</th>
+                        <th className="px-8 py-5">Catégorie</th>
+                        <th className="px-8 py-5">Prix</th>
+                        <th className="px-8 py-5">Stock</th>
+                        <th className="px-8 py-5 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-primary/5">
+                      {products.map(product => (
+                        <tr key={product.id} className="group hover:bg-slate-50/50 dark:hover:bg-primary/5 transition-colors">
+                          <td className="px-8 py-6">
+                            <div className="flex items-center gap-4">
+                              <div className="w-14 h-14 bg-white rounded-2xl p-2 border border-slate-100 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform">
+                                <img src={product.image} alt="" className="w-full h-full object-contain" />
+                              </div>
+                              <div>
+                                <p className="font-bold text-sm leading-none mb-1">{product.name}</p>
+                                <p className="text-xs text-slate-400 font-medium">{product.brand}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-8 py-6">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded-full">
+                              {product.category}
+                            </span>
+                          </td>
+                          <td className="px-8 py-6 font-black text-slate-900 dark:text-white">
+                            {product.price.toLocaleString()} CFA
+                          </td>
+                          <td className="px-8 py-6">
+                            <div className="flex items-center gap-2">
+                              <div className={`w-2 h-2 rounded-full ${product.stock < 5 ? 'bg-red-500' : product.stock < 15 ? 'bg-amber-500' : 'bg-green-500'}`} />
+                              <span className={`text-xs font-bold ${product.stock < 5 ? 'text-red-600' : product.stock < 15 ? 'text-amber-600' : 'text-green-600'}`}>
+                                {product.stock} unités
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-8 py-6 text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              <button onClick={() => startEdit(product)} className="p-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl text-slate-400 hover:text-primary hover:bg-primary/10 transition-all">
+                                <Edit className="w-4 h-4" />
+                              </button>
+                              <button onClick={() => deleteProduct(product.id)} className="p-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all">
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Product Modal */}
+              <AnimatePresence>
+                {isAddingCategory && (
+                  <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
+                    <motion.div 
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      onClick={() => setIsAddingCategory(false)}
+                      className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+                    />
+                    <motion.div 
+                      initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                      className="relative w-full max-w-2xl bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+                    >
+                      <div className="p-8 border-b border-slate-100 dark:border-primary/10 flex items-center justify-between bg-slate-50/50 dark:bg-primary/5">
+                        <div>
+                          <h3 className="text-2xl font-black uppercase italic tracking-tighter">
+                            {editingCategory ? 'Modifier la Catégorie' : 'Nouvelle Catégorie'}
+                          </h3>
+                          <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">Détails de la catégorie</p>
+                        </div>
+                        <button onClick={() => setIsAddingCategory(false)} className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl transition-colors">
+                          <XCircle className="w-6 h-6 text-slate-400" />
+                        </button>
+                      </div>
+
+                      <form onSubmit={handleAddCategory} className="flex-1 overflow-y-auto p-8 space-y-8">
+                        <div className="space-y-6">
+                          <div className="space-y-2">
+                            <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Image de la Catégorie</label>
+                            <div className="relative group">
+                              <div className="aspect-video rounded-3xl bg-slate-100 dark:bg-slate-800 border-2 border-dashed border-slate-200 dark:border-slate-700 flex flex-col items-center justify-center overflow-hidden relative">
+                                {newCategory.image ? (
+                                  <>
+                                    <img src={newCategory.image} alt="Preview" className="w-full h-full object-cover" />
+                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                      <label className="cursor-pointer bg-white text-slate-900 px-6 py-3 rounded-2xl font-bold text-sm flex items-center gap-2">
+                                        <Upload className="w-4 h-4" /> Changer
+                                        <input type="file" accept="image/*" className="hidden" onChange={handleCategoryImageUpload} />
+                                      </label>
+                                    </div>
+                                  </>
+                                ) : (
+                                  <label className="cursor-pointer flex flex-col items-center gap-4 p-10 text-center">
+                                    <div className="w-16 h-16 bg-white dark:bg-slate-700 rounded-2xl shadow-sm flex items-center justify-center">
+                                      <Upload className="w-8 h-8 text-primary" />
+                                    </div>
+                                    <p className="font-bold text-slate-900 dark:text-white">Télécharger une image</p>
+                                    <input type="file" accept="image/*" className="hidden" onChange={handleCategoryImageUpload} />
+                                  </label>
+                                )}
+                                {uploading && (
+                                  <div className="absolute inset-0 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-center z-10">
+                                    <Loader2 className="w-10 h-10 text-primary animate-spin" />
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="space-y-2">
+                            <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Nom de la Catégorie</label>
+                            <input 
+                              required 
+                              type="text" 
+                              className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" 
+                              value={newCategory.name} 
+                              onChange={e => setNewCategory({...newCategory, name: e.target.value})} 
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Description</label>
+                            <textarea 
+                              required 
+                              className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20 h-32 resize-none" 
+                              value={newCategory.description} 
+                              onChange={e => setNewCategory({...newCategory, description: e.target.value})}
+                            ></textarea>
+                          </div>
+                        </div>
+
+                        <div className="pt-8 border-t border-slate-100 dark:border-primary/10 flex justify-end gap-4">
+                          <button 
+                            type="button" 
+                            onClick={() => setIsAddingCategory(false)} 
+                            className="px-8 py-4 rounded-2xl font-bold text-sm uppercase tracking-widest text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                          >
+                            Annuler
+                          </button>
+                          <button 
+                            type="submit" 
+                            disabled={uploading}
+                            className="bg-primary text-white px-10 py-4 rounded-2xl font-bold text-sm uppercase tracking-widest shadow-xl shadow-primary/20 hover:scale-105 transition-transform disabled:opacity-50 disabled:hover:scale-100"
+                          >
+                            {editingCategory ? 'Mettre à jour' : 'Créer la Catégorie'}
+                          </button>
+                        </div>
+                      </form>
+                    </motion.div>
+                  </div>
+                )}
+              </AnimatePresence>
+              <AnimatePresence>
+                {isAddingProduct && (
+                  <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
+                    <motion.div 
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      onClick={() => setIsAddingProduct(false)}
+                      className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm"
+                    />
+                    <motion.div 
+                      initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                      className="relative w-full max-w-4xl bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+                    >
+                      <div className="p-8 border-b border-slate-100 dark:border-primary/10 flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/50">
+                        <div>
+                          <h3 className="text-2xl font-black uppercase italic tracking-tight">
+                            {editingProduct ? 'Modifier le Produit' : 'Nouveau Produit'}
+                          </h3>
+                          <p className="text-sm text-slate-500">Remplissez les informations ci-dessous</p>
+                        </div>
+                        <button onClick={() => setIsAddingProduct(false)} className="p-3 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-2xl transition-colors">
+                          <XCircle className="w-6 h-6 text-slate-400" />
+                        </button>
+                      </div>
+
+                      <form onSubmit={handleAddProduct} className="flex-1 overflow-y-auto p-8 space-y-8">
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+                          {/* Image Section */}
+                          <div className="space-y-6">
+                            <div className="space-y-2">
+                              <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Image du Produit</label>
+                              <div className="relative group">
+                                <div className="aspect-square rounded-3xl bg-slate-100 dark:bg-slate-800 border-2 border-dashed border-slate-200 dark:border-slate-700 flex flex-col items-center justify-center overflow-hidden relative">
+                                  {newProduct.image ? (
+                                    <>
+                                      <img src={newProduct.image} alt="Preview" className="w-full h-full object-contain p-8" />
+                                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                        <label className="cursor-pointer bg-white text-slate-900 px-6 py-3 rounded-2xl font-bold text-sm flex items-center gap-2 hover:scale-105 transition-transform">
+                                          <Upload className="w-4 h-4" /> Changer l'image
+                                          <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                                        </label>
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <label className="cursor-pointer flex flex-col items-center gap-4 p-10 text-center">
+                                      <div className="w-16 h-16 bg-white dark:bg-slate-700 rounded-2xl shadow-sm flex items-center justify-center">
+                                        <Upload className="w-8 h-8 text-primary" />
+                                      </div>
+                                      <div>
+                                        <p className="font-bold text-slate-900 dark:text-white">Cliquez pour télécharger</p>
+                                        <p className="text-xs text-slate-500 mt-1">PNG, JPG ou WEBP (Max 5MB)</p>
+                                      </div>
+                                      <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                                    </label>
+                                  )}
+                                  {uploading && (
+                                    <div className="absolute inset-0 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-center z-10">
+                                      <Loader2 className="w-10 h-10 text-primary animate-spin mb-4" />
+                                      <p className="text-xs font-bold uppercase tracking-widest text-primary">Téléchargement...</p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Ou URL de l'image</label>
+                              <div className="relative">
+                                <ImageIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                                <input 
+                                  type="url" 
+                                  placeholder="https://images.unsplash.com/..."
+                                  className="w-full pl-12 pr-4 py-4 rounded-2xl bg-slate-50 dark:bg-slate-800 border-none text-sm outline-none focus:ring-2 ring-primary/20" 
+                                  value={newProduct.image} 
+                                  onChange={e => setNewProduct({...newProduct, image: e.target.value})} 
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Info Section */}
+                          <div className="space-y-6">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                              <div className="space-y-2">
+                                <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Nom du Produit</label>
+                                <input required type="text" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={newProduct.name} onChange={e => setNewProduct({...newProduct, name: e.target.value})} />
+                              </div>
+                              <div className="space-y-2">
+                                <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Marque</label>
+                                <input required type="text" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={newProduct.brand} onChange={e => setNewProduct({...newProduct, brand: e.target.value})} />
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                              <div className="space-y-2">
+                                <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Prix (CFA)</label>
+                                <input required type="number" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={newProduct.price} onChange={e => setNewProduct({...newProduct, price: Number(e.target.value)})} />
+                              </div>
+                              <div className="space-y-2">
+                                <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Stock Initial</label>
+                                <input required type="number" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={newProduct.stock} onChange={e => setNewProduct({...newProduct, stock: Number(e.target.value)})} />
+                              </div>
+                            </div>
+
+                              <div className="space-y-2">
+                                <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Catégorie</label>
+                                <select required className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20 appearance-none" value={newProduct.category} onChange={e => setNewProduct({...newProduct, category: e.target.value})}>
+                                  {categories.map(cat => (
+                                    <option key={cat.id} value={cat.id}>{cat.name}</option>
+                                  ))}
+                                </select>
+                              </div>
+
+                            <div className="space-y-2">
+                              <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Description</label>
+                              <textarea required className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20 h-32 resize-none" value={newProduct.description} onChange={e => setNewProduct({...newProduct, description: e.target.value})}></textarea>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="pt-8 border-t border-slate-100 dark:border-primary/10 flex justify-end gap-4">
+                          <button 
+                            type="button" 
+                            onClick={() => setIsAddingProduct(false)} 
+                            className="px-8 py-4 rounded-2xl font-bold text-sm uppercase tracking-widest text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                          >
+                            Annuler
+                          </button>
+                          <button 
+                            type="submit" 
+                            disabled={uploading}
+                            className="bg-primary text-white px-10 py-4 rounded-2xl font-bold text-sm uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20 disabled:opacity-50"
+                          >
+                            {editingProduct ? 'Mettre à jour' : 'Créer le Produit'}
+                          </button>
+                        </div>
+                      </form>
+                    </motion.div>
+                  </div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
+
+          {activeTab === 'categories' && (
+            <div className="space-y-8">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-3xl font-black uppercase italic tracking-tighter">Gestion des Catégories</h2>
+                  <p className="text-slate-500 text-sm mt-1">Gérez les catégories de produits de votre boutique.</p>
+                </div>
+                <button 
+                  onClick={() => {
+                    setEditingCategory(null);
+                    setNewCategory({ name: '', description: '', image: '' });
+                    setIsAddingCategory(true);
+                  }}
+                  className="bg-primary text-white px-8 py-4 rounded-2xl font-bold text-sm uppercase tracking-widest flex items-center gap-3 shadow-xl shadow-primary/20 hover:scale-105 transition-transform"
+                >
+                  <Plus className="w-5 h-5" /> Nouvelle Catégorie
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {categories.map((category) => (
+                  <div key={category.id} className="bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-sm border border-slate-200 dark:border-primary/10 group">
+                    <div className="relative aspect-video rounded-2xl bg-slate-100 dark:bg-slate-800 overflow-hidden mb-6">
+                      <img src={category.image} alt={category.name} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" />
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent flex items-end p-6">
+                        <h3 className="text-white font-bold text-xl">{category.name}</h3>
+                      </div>
+                    </div>
+                    <p className="text-slate-500 text-sm line-clamp-2 mb-6 h-10">{category.description}</p>
+                    <div className="flex items-center gap-3">
+                      <button 
+                        onClick={() => {
+                          setEditingCategory(category);
+                          setNewCategory(category);
+                          setIsAddingCategory(true);
+                        }}
+                        className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-600 font-bold text-xs hover:bg-primary hover:text-white transition-all"
+                      >
+                        <Edit className="w-4 h-4" /> Modifier
+                      </button>
+                      <button 
+                        onClick={() => deleteCategory(category.id)}
+                        className="p-3 rounded-xl bg-red-50 text-red-500 hover:bg-red-500 hover:text-white transition-all"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
           {activeTab === 'users' && (
-            <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-primary/20 overflow-hidden shadow-sm">
-              <div className="p-8 border-b border-slate-100 dark:border-primary/10 flex justify-between items-center">
-                <h3 className="text-xl font-black uppercase italic">Gestion des Utilisateurs</h3>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                  <input type="text" placeholder="Rechercher..." className="pl-10 pr-4 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border-none text-sm outline-none w-64" />
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                  <h3 className="text-2xl font-black uppercase italic tracking-tight">Gestion des Utilisateurs</h3>
+                  <p className="text-sm text-slate-500">Gérez les comptes et les permissions</p>
                 </div>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead className="bg-slate-50 dark:bg-slate-800/50 text-xs font-bold uppercase tracking-widest text-slate-500">
-                    <tr>
-                      <th className="px-8 py-4">Utilisateur</th>
-                      <th className="px-8 py-4">Rôle</th>
-                      <th className="px-8 py-4">Date d'inscription</th>
-                      <th className="px-8 py-4 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-primary/5">
-                    {allUsers.map(u => (
-                      <tr key={u.id} className="hover:bg-slate-50/50 dark:hover:bg-primary/5 transition-colors">
-                        <td className="px-8 py-6">
-                          <div className="flex items-center gap-3">
-                            {u.photoURL ? (
-                              <img src={u.photoURL} alt="" className="w-8 h-8 rounded-full object-cover" />
-                            ) : (
-                              <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-xs">
+
+              <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-primary/20 overflow-hidden shadow-sm">
+                <div className="p-6 border-b border-slate-100 dark:border-primary/10 flex flex-col sm:flex-row gap-4 justify-between items-center">
+                  <div className="relative w-full sm:w-96">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input type="text" placeholder="Rechercher un utilisateur..." className="w-full pl-12 pr-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border-none text-sm outline-none focus:ring-2 ring-primary/20" />
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead className="bg-slate-50 dark:bg-slate-800/50 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                      <tr>
+                        <th className="px-8 py-5">Utilisateur</th>
+                        <th className="px-8 py-5">Rôle</th>
+                        <th className="px-8 py-5">Date d'inscription</th>
+                        <th className="px-8 py-5 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-primary/5">
+                      {allUsers.map(u => (
+                        <tr key={u.id} className="group hover:bg-slate-50/50 dark:hover:bg-primary/5 transition-colors">
+                          <td className="px-8 py-6">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center text-primary font-black text-xs">
                                 {u.displayName?.charAt(0) || u.email.charAt(0)}
                               </div>
-                            )}
-                            <div>
-                              <p className="font-bold text-sm">{u.displayName || 'Utilisateur'}</p>
-                              <p className="text-xs text-slate-500">{u.email}</p>
+                              <div>
+                                <p className="font-bold text-sm leading-none mb-1">{u.displayName || 'Sans nom'}</p>
+                                <p className="text-xs text-slate-400">{u.email}</p>
+                              </div>
                             </div>
-                          </div>
-                        </td>
-                        <td className="px-8 py-6">
-                          <span className={`text-[10px] font-black uppercase px-2 py-1 rounded-full ${u.role === 'admin' ? 'bg-primary/10 text-primary' : 'bg-slate-100 text-slate-600'}`}>
-                            {u.role}
-                          </span>
-                        </td>
-                        <td className="px-8 py-6 text-sm text-slate-500">
-                          {format(u.createdAt, 'dd/MM/yyyy')}
-                        </td>
-                        <td className="px-8 py-6 text-right">
-                          <button className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">
-                            <Edit className="w-4 h-4 text-slate-400" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                          </td>
+                          <td className="px-8 py-6">
+                            <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full ${u.role === 'admin' ? 'bg-primary text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
+                              {u.role}
+                            </span>
+                          </td>
+                          <td className="px-8 py-6 text-sm text-slate-500 font-medium">
+                            {u.createdAt ? format(new Date(u.createdAt), 'dd MMM yyyy', { locale: fr }) : 'N/A'}
+                          </td>
+                          <td className="px-8 py-6 text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              {u.role !== 'admin' ? (
+                                <button 
+                                  onClick={() => updateUserRole(u.id, 'admin')}
+                                  className="text-[10px] font-black uppercase tracking-widest text-primary hover:underline"
+                                >
+                                  Promouvoir Admin
+                                </button>
+                              ) : (
+                                <button 
+                                  onClick={() => updateUserRole(u.id, 'user')}
+                                  className="text-[10px] font-black uppercase tracking-widest text-amber-600 hover:underline"
+                                >
+                                  Rétrograder User
+                                </button>
+                              )}
+                              <button 
+                                onClick={() => deleteUser(u.id)}
+                                className="p-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl text-slate-400 hover:text-red-500 transition-all"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           )}
 
-          {activeTab === 'settings' && (
-            <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-primary/20 overflow-hidden shadow-sm">
-              <div className="p-8 border-b border-slate-100 dark:border-primary/10">
-                <h3 className="text-xl font-black uppercase italic">Paramètres Généraux</h3>
+          {activeTab === 'frontend' && (
+            <div className="space-y-8">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-3xl font-black uppercase italic tracking-tighter">Gestion du Frontend</h2>
+                  <p className="text-slate-500 text-sm mt-1">Gérez les slides, bannières et sections de la page d'accueil.</p>
+                </div>
+                <button 
+                  onClick={() => {
+                    setEditingSlide(null);
+                    setNewSlide({
+                      title: '',
+                      subtitle: '',
+                      description: '',
+                      image: '',
+                      link: '/shop',
+                      buttonText: 'Découvrir',
+                      active: true
+                    });
+                    setIsAddingSlide(true);
+                  }}
+                  className="bg-primary text-white px-8 py-4 rounded-2xl font-bold text-sm uppercase tracking-widest flex items-center gap-3 shadow-xl shadow-primary/20 hover:scale-105 transition-transform"
+                >
+                  <Plus className="w-5 h-5" /> Nouveau Slide
+                </button>
               </div>
-              <form onSubmit={handleUpdateSettings} className="p-8 space-y-6 max-w-2xl">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Nom de la Boutique</label>
-                  <input type="text" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl px-4 py-3 text-sm outline-none" value={settings.siteName} onChange={e => setSettings({...settings, siteName: e.target.value})} />
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div className="space-y-6">
+                  <h3 className="text-xl font-black uppercase italic">Slides du Hero</h3>
+                  <div className="space-y-4">
+                    {frontendContent.slides.map((slide) => (
+                      <div key={slide.id} className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-primary/10 flex gap-6">
+                        <div className="w-32 h-20 rounded-xl overflow-hidden flex-shrink-0 bg-slate-100 dark:bg-slate-800">
+                          <img src={slide.image} alt="" className="w-full h-full object-cover" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <h4 className="font-bold text-sm truncate">{slide.title}</h4>
+                            {!slide.active && <span className="text-[8px] font-black uppercase bg-slate-100 text-slate-400 px-2 py-0.5 rounded">Inactif</span>}
+                          </div>
+                          <p className="text-xs text-slate-400 line-clamp-1 mb-3">{slide.description}</p>
+                          <div className="flex items-center gap-3">
+                            <button 
+                              onClick={() => {
+                                setEditingSlide(slide);
+                                setNewSlide(slide);
+                                setIsAddingSlide(true);
+                              }}
+                              className="text-[10px] font-black uppercase tracking-widest text-primary hover:underline"
+                            >
+                              Modifier
+                            </button>
+                            <button 
+                              onClick={() => toggleSlideStatus(slide.id)}
+                              className="text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-slate-600"
+                            >
+                              {slide.active ? 'Désactiver' : 'Activer'}
+                            </button>
+                            <button 
+                              onClick={() => deleteSlide(slide.id)}
+                              className="text-[10px] font-black uppercase tracking-widest text-red-500 hover:underline"
+                            >
+                              Supprimer
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    {frontendContent.slides.length === 0 && (
+                      <div className="p-12 text-center border-2 border-dashed border-slate-200 dark:border-primary/10 rounded-3xl">
+                        <Play className="w-8 h-8 text-slate-300 mx-auto mb-3" />
+                        <p className="text-slate-400 text-sm font-bold uppercase tracking-widest">Aucun slide configuré</p>
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Email de Contact</label>
-                  <input type="email" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl px-4 py-3 text-sm outline-none" value={settings.contactEmail} onChange={e => setSettings({...settings, contactEmail: e.target.value})} />
+
+                <div className="space-y-6">
+                  <h3 className="text-xl font-black uppercase italic">Sections en Vedette</h3>
+                  <div className="space-y-4">
+                    {frontendContent.featuredSections.map((section) => (
+                      <div key={section.id} className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-primary/10 flex items-center justify-between group">
+                        <div className="flex-1">
+                          <h4 className="font-bold text-sm">{section.title}</h4>
+                          <p className="text-xs text-slate-400">{section.subtitle}</p>
+                          <button 
+                            onClick={() => setEditingSection(section)}
+                            className="text-[10px] font-black uppercase tracking-widest text-primary hover:underline mt-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            Modifier le texte
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button 
+                            onClick={() => toggleSectionStatus(section.id)}
+                            className={`p-3 rounded-xl transition-all ${section.active ? 'bg-primary/10 text-primary' : 'bg-slate-100 text-slate-400'}`}
+                          >
+                            {section.active ? <Eye className="w-5 h-5" /> : <EyeOff className="w-5 h-5" />}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    {frontendContent.featuredSections.length === 0 && (
+                      <button 
+                        onClick={() => saveFrontendContent({
+                          ...frontendContent,
+                          featuredSections: [
+                            { id: 'latest', title: 'Derniers Arrivages', subtitle: 'Découvrez nos nouveautés', active: true },
+                            { id: 'featured', title: 'Sélection du Moment', subtitle: 'Les produits que vous allez adorer', active: true },
+                            { id: 'top', title: 'Les Mieux Notés', subtitle: 'La qualité plébiscitée par nos clients', active: true }
+                          ]
+                        })}
+                        className="w-full p-12 text-center border-2 border-dashed border-slate-200 dark:border-primary/10 rounded-3xl hover:bg-slate-50 transition-colors"
+                      >
+                        <Plus className="w-8 h-8 text-slate-300 mx-auto mb-3" />
+                        <p className="text-slate-400 text-sm font-bold uppercase tracking-widest">Initialiser les sections</p>
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Devise</label>
-                  <select className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl px-4 py-3 text-sm outline-none" value={settings.currency} onChange={e => setSettings({...settings, currency: e.target.value})}>
-                    <option value="EUR">Euro (€)</option>
-                    <option value="USD">Dollar ($)</option>
-                  </select>
+              </div>
+
+              <AnimatePresence>
+                {isAddingSlide && (
+                  <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm">
+                    <motion.div 
+                      initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                      className="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden"
+                    >
+                      <form onSubmit={addOrUpdateSlide} className="p-8 md:p-12">
+                        <div className="flex items-center justify-between mb-10">
+                          <h3 className="text-3xl font-black uppercase italic tracking-tighter">
+                            {editingSlide ? 'Modifier le Slide' : 'Nouveau Slide'}
+                          </h3>
+                          <button type="button" onClick={() => setIsAddingSlide(false)} className="p-3 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+                            <XCircle className="w-6 h-6 text-slate-400" />
+                          </button>
+                        </div>
+
+                        <div className="space-y-6 max-h-[60vh] overflow-y-auto pr-4 no-scrollbar">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="space-y-2">
+                              <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Titre</label>
+                              <input required type="text" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={newSlide.title} onChange={e => setNewSlide({...newSlide, title: e.target.value})} />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Sous-titre</label>
+                              <input required type="text" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={newSlide.subtitle} onChange={e => setNewSlide({...newSlide, subtitle: e.target.value})} />
+                            </div>
+                          </div>
+
+                          <div className="space-y-2">
+                            <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Description</label>
+                            <textarea required className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20 h-24 resize-none" value={newSlide.description} onChange={e => setNewSlide({...newSlide, description: e.target.value})}></textarea>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="space-y-2">
+                              <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Lien (URL)</label>
+                              <input required type="text" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={newSlide.link} onChange={e => setNewSlide({...newSlide, link: e.target.value})} />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Texte du Bouton</label>
+                              <input required type="text" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={newSlide.buttonText} onChange={e => setNewSlide({...newSlide, buttonText: e.target.value})} />
+                            </div>
+                          </div>
+
+                          <div className="space-y-2">
+                            <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Image du Slide</label>
+                            <div className="flex gap-4">
+                              <div className="flex-1">
+                                <input type="text" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={newSlide.image} onChange={e => setNewSlide({...newSlide, image: e.target.value})} placeholder="URL de l'image" />
+                              </div>
+                              <label className="cursor-pointer bg-slate-100 dark:bg-slate-800 px-6 rounded-2xl flex items-center justify-center hover:bg-slate-200 transition-colors">
+                                <Upload className="w-5 h-5 text-slate-500" />
+                                <input type="file" className="hidden" accept="image/*" onChange={handleSlideImageUpload} />
+                              </label>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="pt-8 mt-8 border-t border-slate-100 dark:border-primary/10 flex justify-end gap-4">
+                          <button type="button" onClick={() => setIsAddingSlide(false)} className="px-8 py-4 rounded-2xl font-bold text-sm uppercase tracking-widest text-slate-500 hover:bg-slate-100 transition-colors">Annuler</button>
+                          <button type="submit" disabled={uploading} className="bg-primary text-white px-10 py-4 rounded-2xl font-bold text-sm uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20 disabled:opacity-50">
+                            {editingSlide ? 'Mettre à jour' : 'Créer le Slide'}
+                          </button>
+                        </div>
+                      </form>
+                    </motion.div>
+                  </div>
+                )}
+              </AnimatePresence>
+
+              <AnimatePresence>
+                {editingSection && (
+                  <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm">
+                    <motion.div 
+                      initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                      className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[2.5rem] shadow-2xl overflow-hidden"
+                    >
+                      <form onSubmit={updateSection} className="p-8 md:p-12">
+                        <div className="flex items-center justify-between mb-10">
+                          <h3 className="text-3xl font-black uppercase italic tracking-tighter">Modifier la Section</h3>
+                          <button type="button" onClick={() => setEditingSection(null)} className="p-3 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+                            <XCircle className="w-6 h-6 text-slate-400" />
+                          </button>
+                        </div>
+
+                        <div className="space-y-6">
+                          <div className="space-y-2">
+                            <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Titre</label>
+                            <input required type="text" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={editingSection.title} onChange={e => setEditingSection({...editingSection, title: e.target.value})} />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Sous-titre</label>
+                            <input required type="text" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={editingSection.subtitle} onChange={e => setEditingSection({...editingSection, subtitle: e.target.value})} />
+                          </div>
+                        </div>
+
+                        <div className="pt-8 mt-8 border-t border-slate-100 dark:border-primary/10 flex justify-end gap-4">
+                          <button type="button" onClick={() => setEditingSection(null)} className="px-8 py-4 rounded-2xl font-bold text-sm uppercase tracking-widest text-slate-500 hover:bg-slate-100 transition-colors">Annuler</button>
+                          <button type="submit" className="bg-primary text-white px-10 py-4 rounded-2xl font-bold text-sm uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20">
+                            Enregistrer
+                          </button>
+                        </div>
+                      </form>
+                    </motion.div>
+                  </div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
+
+          {activeTab === 'settings' && (
+            <div className="space-y-6">
+              <div>
+                <h3 className="text-2xl font-black uppercase italic tracking-tight">Paramètres</h3>
+                <p className="text-sm text-slate-500">Configurez les options de votre boutique</p>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <div className="lg:col-span-2 space-y-6">
+                  <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-primary/20 overflow-hidden shadow-sm">
+                    <div className="p-8 border-b border-slate-100 dark:border-primary/10">
+                      <h4 className="text-sm font-black uppercase tracking-widest flex items-center gap-2">
+                        <Settings className="w-4 h-4 text-primary" /> Informations Générales
+                      </h4>
+                    </div>
+                    <form onSubmit={handleUpdateSettings} className="p-8 space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Nom de la Boutique</label>
+                          <input type="text" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-5 py-4 text-sm font-bold outline-none focus:ring-2 ring-primary/20" value={settings.siteName} onChange={e => setSettings({...settings, siteName: e.target.value})} />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Email de Contact</label>
+                          <input type="email" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-5 py-4 text-sm font-bold outline-none focus:ring-2 ring-primary/20" value={settings.contactEmail} onChange={e => setSettings({...settings, contactEmail: e.target.value})} />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Devise</label>
+                          <select className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-5 py-4 text-sm font-bold outline-none focus:ring-2 ring-primary/20" value={settings.currency} onChange={e => setSettings({...settings, currency: e.target.value})}>
+                            <option value="CFA">Franc CFA (CFA)</option>
+                            <option value="EUR">Euro (€)</option>
+                            <option value="USD">Dollar ($)</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div className="pt-4">
+                        <button type="submit" className="bg-primary text-white px-8 py-4 rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg shadow-primary/20 hover:scale-105 transition-transform">
+                          Enregistrer les Modifications
+                        </button>
+                      </div>
+                    </form>
+                  </div>
                 </div>
-                <button type="submit" className="bg-primary text-white px-8 py-3 rounded-xl font-bold text-sm uppercase tracking-widest">Enregistrer les Paramètres</button>
-              </form>
+
+                <div className="space-y-6">
+                  <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-primary/20 overflow-hidden shadow-sm">
+                    <div className="p-8 border-b border-slate-100 dark:border-primary/10">
+                      <h4 className="text-sm font-black uppercase tracking-widest flex items-center gap-2 text-amber-500">
+                        <Bell className="w-4 h-4" /> Maintenance
+                      </h4>
+                    </div>
+                    <div className="p-8 space-y-4">
+                      <p className="text-xs text-slate-500 leading-relaxed font-medium">
+                        Utilisez ces outils pour réinitialiser ou peupler votre base de données avec des données de démonstration.
+                      </p>
+                      <button 
+                        type="button"
+                        onClick={seedDatabase}
+                        className="w-full bg-amber-500 text-white px-6 py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-amber-600 transition-colors shadow-lg shadow-amber-500/20"
+                      >
+                        Importer les données démo
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </div>

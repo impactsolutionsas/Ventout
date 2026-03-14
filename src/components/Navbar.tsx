@@ -89,17 +89,23 @@ export const Navbar = () => {
                   </Link>
                 )}
                 <Link to="/profile" className="w-9 h-9 rounded-full overflow-hidden border-2 border-primary">
-                  <img src={user.photoURL || ''} alt={user.displayName || ''} className="w-full h-full object-cover" />
+                  {user.photoURL ? (
+                    <img src={user.photoURL} alt={user.displayName || ''} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full bg-primary/10 flex items-center justify-center text-primary font-bold text-xs">
+                      {user.displayName?.charAt(0) || user.email?.charAt(0) || 'U'}
+                    </div>
+                  )}
                 </Link>
                 <button onClick={logout} className="hidden md:block text-slate-500 hover:text-primary">
                   <LogOut className="w-5 h-5" />
                 </button>
               </div>
             ) : (
-              <button onClick={login} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-white font-bold text-sm hover:bg-primary/90 transition-all">
+              <Link to="/login" className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-white font-bold text-sm hover:bg-primary/90 transition-all">
                 <User className="w-4 h-4" />
                 Connexion
-              </button>
+              </Link>
             )}
 
             <button className="lg:hidden p-2" onClick={() => setIsMenuOpen(!isMenuOpen)}>

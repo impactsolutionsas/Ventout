@@ -1,26 +1,105 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, ChevronLeft, ChevronRight, Star, ShoppingCart, Zap, TrendingUp, Sparkles } from 'lucide-react';
+import { ArrowRight, ChevronLeft, ChevronRight, Star, ShoppingCart, Zap, TrendingUp, Sparkles, Loader2 } from 'lucide-react';
 import { CATEGORIES, PRODUCTS } from '../constants';
 import { motion, AnimatePresence } from 'motion/react';
 import { useCartStore } from '../store';
+import { db } from '../firebase';
+import { collection, getDocs, onSnapshot, doc } from 'firebase/firestore';
+import { Product, Category, FrontendContent } from '../types';
+import { handleFirestoreError, OperationType } from '../utils/firestore-errors';
 
 export const Home = () => {
   const addItem = useCartStore((state) => state.addItem);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [frontendContent, setFrontendContent] = useState<FrontendContent | null>(null);
+  const [loading, setLoading] = useState(true);
   const [currentSlide, setCurrentSlide] = useState(0);
-  const latestProducts = PRODUCTS.filter(p => p.new).slice(0, 5);
-  const featuredProducts = PRODUCTS.filter(p => p.featured).slice(0, 4);
-  const topProducts = PRODUCTS.sort((a, b) => (b.rating || 0) - (a.rating || 0)).slice(0, 4);
 
   useEffect(() => {
+    setLoading(true);
+
+    const unsubProducts = onSnapshot(collection(db, 'products'), 
+      (snap) => {
+        const productsData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product));
+        setProducts(productsData.length > 0 ? productsData : PRODUCTS);
+        setLoading(false);
+      },
+      (err) => {
+        console.error("Error fetching products:", err);
+        setProducts(PRODUCTS);
+        handleFirestoreError(err, OperationType.GET, 'products');
+        setLoading(false);
+      }
+    );
+
+    const unsubCategories = onSnapshot(collection(db, 'categories'), 
+      (snap) => {
+        const catsData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Category));
+        setCategories(catsData.length > 0 ? catsData : CATEGORIES);
+      },
+      (err) => {
+        console.error("Error fetching categories:", err);
+        setCategories(CATEGORIES);
+        handleFirestoreError(err, OperationType.GET, 'categories');
+      }
+    );
+
+    const unsubFrontend = onSnapshot(doc(db, 'settings', 'frontend'), 
+      (snap) => {
+        if (snap.exists()) {
+          setFrontendContent(snap.data() as FrontendContent);
+        }
+      },
+      (err) => {
+        console.error("Error fetching frontend settings:", err);
+        handleFirestoreError(err, OperationType.GET, 'settings/frontend');
+      }
+    );
+
+    return () => {
+      unsubProducts();
+      unsubCategories();
+      unsubFrontend();
+    };
+  }, []);
+
+  const latestProducts = products.filter(p => p.new).slice(0, 5);
+  const featuredProducts = products.filter(p => p.featured).slice(0, 4);
+  const topProducts = [...products].sort((a, b) => (b.rating || 0) - (a.rating || 0)).slice(0, 4);
+
+  const activeSlides = frontendContent?.slides.filter(s => s.active) || [];
+  const displaySlides = activeSlides.length > 0 ? activeSlides : null;
+
+  useEffect(() => {
+    const slideCount = displaySlides ? displaySlides.length : latestProducts.length;
+    if (slideCount === 0) return;
     const timer = setInterval(() => {
-      setCurrentSlide((prev) => (prev + 1) % latestProducts.length);
+      setCurrentSlide((prev) => (prev + 1) % slideCount);
     }, 5000);
     return () => clearInterval(timer);
-  }, [latestProducts.length]);
+  }, [displaySlides?.length, latestProducts.length]);
 
-  const nextSlide = () => setCurrentSlide((prev) => (prev + 1) % latestProducts.length);
-  const prevSlide = () => setCurrentSlide((prev) => (prev - 1 + latestProducts.length) % latestProducts.length);
+  const nextSlide = () => {
+    const slideCount = displaySlides ? displaySlides.length : latestProducts.length;
+    setCurrentSlide((prev) => (prev + 1) % slideCount);
+  };
+  const prevSlide = () => {
+    const slideCount = displaySlides ? displaySlides.length : latestProducts.length;
+    setCurrentSlide((prev) => (prev - 1 + slideCount) % slideCount);
+  };
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-40">
+        <Loader2 className="w-12 h-12 text-primary animate-spin mb-4" />
+        <p className="text-slate-500 font-bold uppercase tracking-widest text-xs">Chargement de VENTOUT...</p>
+      </div>
+    );
+  }
+
+  const getSection = (id: string) => frontendContent?.featuredSections.find(s => s.id === id);
 
   return (
     <div className="max-w-[1600px] mx-auto px-4 md:px-8 py-6">
@@ -32,7 +111,7 @@ export const Home = () => {
               <h3 className="font-black uppercase italic tracking-tighter text-lg">Catégories</h3>
             </div>
             <nav className="p-4 space-y-1">
-              {CATEGORIES.map((cat) => (
+              {categories.map((cat) => (
                 <Link 
                   key={cat.id} 
                   to={`/shop?cat=${cat.id}`}
@@ -72,42 +151,83 @@ export const Home = () => {
                 transition={{ duration: 0.7 }}
                 className="absolute inset-0"
               >
-                <img 
-                  src={latestProducts[currentSlide].image} 
-                  alt={latestProducts[currentSlide].name}
-                  className="w-full h-full object-cover"
-                />
-                <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-950/70 to-transparent flex flex-col justify-center px-8 md:px-16">
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.3 }}
-                  >
-                    <span className="inline-flex items-center gap-2 bg-primary/20 text-primary px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest mb-6 border border-primary/30">
-                      <Sparkles className="w-3 h-3" /> Dernier Arrivage
-                    </span>
-                    <h2 className="text-4xl md:text-7xl font-black text-white leading-none mb-6 max-w-2xl uppercase italic tracking-tighter">
-                      {latestProducts[currentSlide].name}
-                    </h2>
-                    <p className="text-slate-300 text-lg mb-10 max-w-md font-medium leading-relaxed line-clamp-2">
-                      {latestProducts[currentSlide].description}
-                    </p>
-                    <div className="flex flex-wrap gap-4">
-                      <Link 
-                        to={`/product/${latestProducts[currentSlide].id}`}
-                        className="bg-primary text-white px-10 py-4 rounded-2xl font-black uppercase tracking-widest text-sm hover:scale-105 transition-transform shadow-xl shadow-primary/20"
+                {displaySlides ? (
+                  <>
+                    <img 
+                      src={displaySlides[currentSlide].image} 
+                      alt={displaySlides[currentSlide].title}
+                      className="w-full h-full object-cover"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-950/70 to-transparent flex flex-col justify-center px-8 md:px-16">
+                      <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.3 }}
                       >
-                        Voir le produit
-                      </Link>
-                      <button 
-                        onClick={() => addItem(latestProducts[currentSlide])}
-                        className="bg-white/10 backdrop-blur-md border border-white/20 text-white px-10 py-4 rounded-2xl font-black uppercase tracking-widest text-sm hover:bg-white/20 transition-all"
-                      >
-                        Ajouter au panier
-                      </button>
+                        <span className="inline-flex items-center gap-2 bg-primary/20 text-primary px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest mb-6 border border-primary/30">
+                          <Sparkles className="w-3 h-3" /> {displaySlides[currentSlide].subtitle}
+                        </span>
+                        <h2 className="text-4xl md:text-7xl font-black text-white leading-none mb-6 max-w-2xl uppercase italic tracking-tighter">
+                          {displaySlides[currentSlide].title}
+                        </h2>
+                        <p className="text-slate-300 text-lg mb-10 max-w-md font-medium leading-relaxed line-clamp-2">
+                          {displaySlides[currentSlide].description}
+                        </p>
+                        <div className="flex flex-wrap gap-4">
+                          <Link 
+                            to={displaySlides[currentSlide].link}
+                            className="bg-primary text-white px-10 py-4 rounded-2xl font-black uppercase tracking-widest text-sm hover:scale-105 transition-transform shadow-xl shadow-primary/20"
+                          >
+                            {displaySlides[currentSlide].buttonText}
+                          </Link>
+                        </div>
+                      </motion.div>
                     </div>
-                  </motion.div>
-                </div>
+                  </>
+                ) : latestProducts.length > 0 ? (
+                  <>
+                    <img 
+                      src={latestProducts[currentSlide].image} 
+                      alt={latestProducts[currentSlide].name}
+                      className="w-full h-full object-cover"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-950/70 to-transparent flex flex-col justify-center px-8 md:px-16">
+                      <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.3 }}
+                      >
+                        <span className="inline-flex items-center gap-2 bg-primary/20 text-primary px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest mb-6 border border-primary/30">
+                          <Sparkles className="w-3 h-3" /> Dernier Arrivage
+                        </span>
+                        <h2 className="text-4xl md:text-7xl font-black text-white leading-none mb-6 max-w-2xl uppercase italic tracking-tighter">
+                          {latestProducts[currentSlide].name}
+                        </h2>
+                        <p className="text-slate-300 text-lg mb-10 max-w-md font-medium leading-relaxed line-clamp-2">
+                          {latestProducts[currentSlide].description}
+                        </p>
+                        <div className="flex flex-wrap gap-4">
+                          <Link 
+                            to={`/product/${latestProducts[currentSlide].id}`}
+                            className="bg-primary text-white px-10 py-4 rounded-2xl font-black uppercase tracking-widest text-sm hover:scale-105 transition-transform shadow-xl shadow-primary/20"
+                          >
+                            Voir le produit
+                          </Link>
+                          <button 
+                            onClick={() => addItem(latestProducts[currentSlide])}
+                            className="bg-white/10 backdrop-blur-md border border-white/20 text-white px-10 py-4 rounded-2xl font-black uppercase tracking-widest text-sm hover:bg-white/20 transition-all"
+                          >
+                            Ajouter au panier
+                          </button>
+                        </div>
+                      </motion.div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="w-full h-full bg-slate-900 flex items-center justify-center">
+                    <p className="text-white font-bold italic uppercase tracking-widest">Bienvenue chez VENTOUT</p>
+                  </div>
+                )}
               </motion.div>
             </AnimatePresence>
 
@@ -129,7 +249,7 @@ export const Home = () => {
 
             {/* Slider Indicators */}
             <div className="absolute bottom-8 left-8 flex gap-2 z-10">
-              {latestProducts.map((_, idx) => (
+              {(displaySlides || latestProducts).map((_, idx) => (
                 <button 
                   key={idx}
                   onClick={() => setCurrentSlide(idx)}
@@ -146,7 +266,7 @@ export const Home = () => {
               <Link to="/shop" className="text-primary text-xs font-bold uppercase underline">Tout voir</Link>
             </div>
             <div className="flex gap-4 overflow-x-auto pb-4 no-scrollbar">
-              {CATEGORIES.map((cat) => (
+              {categories.map((cat) => (
                 <Link 
                   key={cat.id} 
                   to={`/shop?cat=${cat.id}`}
@@ -162,43 +282,53 @@ export const Home = () => {
           </section>
 
           {/* Top Products Section */}
-          <section>
-            <div className="flex items-end justify-between mb-8">
-              <div>
-                <div className="flex items-center gap-2 text-primary mb-2">
-                  <TrendingUp className="w-5 h-5" />
-                  <span className="text-[10px] font-black uppercase tracking-[0.3em]">Tendances</span>
+          {(!getSection('top') || getSection('top')?.active) && (
+            <section>
+              <div className="flex items-end justify-between mb-8">
+                <div>
+                  <div className="flex items-center gap-2 text-primary mb-2">
+                    <TrendingUp className="w-5 h-5" />
+                    <span className="text-[10px] font-black uppercase tracking-[0.3em]">Tendances</span>
+                  </div>
+                  <h3 className="text-3xl font-black uppercase italic tracking-tighter">
+                    {getSection('top')?.title || 'Top Produits'}
+                  </h3>
+                  {getSection('top')?.subtitle && <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">{getSection('top')?.subtitle}</p>}
                 </div>
-                <h3 className="text-3xl font-black uppercase italic tracking-tighter">Top Produits</h3>
+                <Link to="/shop" className="text-slate-500 hover:text-primary transition-colors flex items-center gap-2 font-bold text-sm">
+                  Voir tout <ArrowRight className="w-4 h-4" />
+                </Link>
               </div>
-              <Link to="/shop" className="text-slate-500 hover:text-primary transition-colors flex items-center gap-2 font-bold text-sm">
-                Voir tout <ArrowRight className="w-4 h-4" />
-              </Link>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-              {topProducts.map((product) => (
-                <ProductCard key={product.id} product={product} addItem={addItem} />
-              ))}
-            </div>
-          </section>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                {topProducts.map((product) => (
+                  <ProductCard key={product.id} product={product} addItem={addItem} />
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* Featured Selection Section */}
-          <section>
-            <div className="flex items-end justify-between mb-8">
-              <div>
-                <div className="flex items-center gap-2 text-primary mb-2">
-                  <Star className="w-5 h-5" />
-                  <span className="text-[10px] font-black uppercase tracking-[0.3em]">Sélection</span>
+          {(!getSection('featured') || getSection('featured')?.active) && (
+            <section>
+              <div className="flex items-end justify-between mb-8">
+                <div>
+                  <div className="flex items-center gap-2 text-primary mb-2">
+                    <Star className="w-5 h-5" />
+                    <span className="text-[10px] font-black uppercase tracking-[0.3em]">Sélection</span>
+                  </div>
+                  <h3 className="text-3xl font-black uppercase italic tracking-tighter">
+                    {getSection('featured')?.title || 'Produits Vedettes'}
+                  </h3>
+                  {getSection('featured')?.subtitle && <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">{getSection('featured')?.subtitle}</p>}
                 </div>
-                <h3 className="text-3xl font-black uppercase italic tracking-tighter">Produits Vedettes</h3>
               </div>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-              {featuredProducts.map((product) => (
-                <ProductCard key={product.id} product={product} addItem={addItem} />
-              ))}
-            </div>
-          </section>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                {featuredProducts.map((product) => (
+                  <ProductCard key={product.id} product={product} addItem={addItem} />
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* Banner Section */}
           <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -235,25 +365,30 @@ export const Home = () => {
           </section>
 
           {/* Latest Arrivals Section */}
-          <section>
-            <div className="flex items-end justify-between mb-8">
-              <div>
-                <div className="flex items-center gap-2 text-primary mb-2">
-                  <Zap className="w-5 h-5" />
-                  <span className="text-[10px] font-black uppercase tracking-[0.3em]">Nouveautés</span>
+          {(!getSection('latest') || getSection('latest')?.active) && (
+            <section>
+              <div className="flex items-end justify-between mb-8">
+                <div>
+                  <div className="flex items-center gap-2 text-primary mb-2">
+                    <Zap className="w-5 h-5" />
+                    <span className="text-[10px] font-black uppercase tracking-[0.3em]">Nouveautés</span>
+                  </div>
+                  <h3 className="text-3xl font-black uppercase italic tracking-tighter">
+                    {getSection('latest')?.title || 'Derniers Arrivages'}
+                  </h3>
+                  {getSection('latest')?.subtitle && <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">{getSection('latest')?.subtitle}</p>}
                 </div>
-                <h3 className="text-3xl font-black uppercase italic tracking-tighter">Derniers Arrivages</h3>
+                <Link to="/shop" className="text-slate-500 hover:text-primary transition-colors flex items-center gap-2 font-bold text-sm">
+                  Voir tout <ArrowRight className="w-4 h-4" />
+                </Link>
               </div>
-              <Link to="/shop" className="text-slate-500 hover:text-primary transition-colors flex items-center gap-2 font-bold text-sm">
-                Voir tout <ArrowRight className="w-4 h-4" />
-              </Link>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-              {latestProducts.map((product) => (
-                <ProductCard key={product.id} product={product} addItem={addItem} />
-              ))}
-            </div>
-          </section>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                {latestProducts.map((product) => (
+                  <ProductCard key={product.id} product={product} addItem={addItem} />
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* Newsletter Section */}
           <section className="bg-slate-100 dark:bg-slate-900 rounded-[2.5rem] p-12 text-center border border-slate-200 dark:border-primary/20">

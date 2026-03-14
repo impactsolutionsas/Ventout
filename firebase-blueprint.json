@@ -1,0 +1,77 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "A product sold in the store",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Product name" },
+        "description": { "type": "string", "description": "Product description" },
+        "price": { "type": "number", "description": "Product price" },
+        "category": { "type": "string", "description": "Category ID" },
+        "brand": { "type": "string", "description": "Brand name" },
+        "image": { "type": "string", "description": "Image URL" },
+        "stock": { "type": "number", "description": "Available stock" },
+        "featured": { "type": "boolean" },
+        "new": { "type": "boolean" },
+        "rating": { "type": "number" },
+        "reviewsCount": { "type": "number" },
+        "specs": { "type": "object" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["name", "price", "category", "brand", "description", "image", "stock"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "A product category",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "image": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["name", "description", "image"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "A customer order",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "items": { "type": "array" },
+        "total": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "processing", "shipped", "delivered", "cancelled"] },
+        "paymentMethod": { "type": "string", "enum": ["cod", "card"] },
+        "shippingAddress": { "type": "object" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["userId", "items", "total", "status", "paymentMethod", "shippingAddress", "createdAt"]
+    },
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "User account information",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["email", "role"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": { "schema": "Product", "description": "Store products" },
+    "/categories/{categoryId}": { "schema": "Category", "description": "Product categories" },
+    "/orders/{orderId}": { "schema": "Order", "description": "Customer orders" },
+    "/users/{userId}": { "schema": "UserProfile", "description": "User profiles" },
+    "/settings/{settingId}": { "schema": "object", "description": "App settings" }
+  }
+}

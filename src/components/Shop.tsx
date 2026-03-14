@@ -1,11 +1,19 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import { PRODUCTS, CATEGORIES } from '../constants';
-import { ShoppingCart, Filter, ChevronRight, Search } from 'lucide-react';
+import { CATEGORIES, PRODUCTS } from '../constants';
+import { ShoppingCart, Filter, ChevronRight, Search, Loader2 } from 'lucide-react';
 import { useCartStore } from '../store';
+import { db } from '../firebase';
+import { collection, getDocs, onSnapshot } from 'firebase/firestore';
+import { Product, Category } from '../types';
+import { handleFirestoreError, OperationType } from '../utils/firestore-errors';
 
 export const Shop = () => {
   const [searchParams, setSearchParams] = useSearchParams();
+  const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [loading, setLoading] = useState(true);
+  
   const categoryId = searchParams.get('cat');
   const promoOnly = searchParams.get('promo') === 'true';
   const searchQuery = searchParams.get('q') || '';
@@ -16,9 +24,44 @@ export const Shop = () => {
   
   const addItem = useCartStore((state) => state.addItem);
 
-  const brands = Array.from(new Set(PRODUCTS.map(p => p.brand))).sort();
+  useEffect(() => {
+    setLoading(true);
 
-  const filteredProducts = PRODUCTS.filter(p => {
+    const unsubProducts = onSnapshot(collection(db, 'products'), 
+      (snap) => {
+        const productsData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product));
+        setProducts(productsData.length > 0 ? productsData : PRODUCTS);
+        setLoading(false);
+      },
+      (err) => {
+        console.error("Error fetching products:", err);
+        setProducts(PRODUCTS);
+        handleFirestoreError(err, OperationType.GET, 'products');
+        setLoading(false);
+      }
+    );
+
+    const unsubCategories = onSnapshot(collection(db, 'categories'), 
+      (snap) => {
+        const catsData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Category));
+        setCategories(catsData.length > 0 ? catsData : CATEGORIES);
+      },
+      (err) => {
+        console.error("Error fetching categories:", err);
+        setCategories(CATEGORIES);
+        handleFirestoreError(err, OperationType.GET, 'categories');
+      }
+    );
+
+    return () => {
+      unsubProducts();
+      unsubCategories();
+    };
+  }, []);
+
+  const brands = Array.from(new Set(products.map(p => p.brand))).sort() as string[];
+
+  const filteredProducts = products.filter(p => {
     if (categoryId && p.category !== categoryId) return false;
     if (promoOnly && !p.oldPrice) return false;
     if (searchQuery && !p.name.toLowerCase().includes(searchQuery.toLowerCase()) && !p.brand.toLowerCase().includes(searchQuery.toLowerCase())) return false;
@@ -37,6 +80,15 @@ export const Shop = () => {
     }
     setSearchParams(params);
   };
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-40">
+        <Loader2 className="w-12 h-12 text-primary animate-spin mb-4" />
+        <p className="text-slate-500 font-bold uppercase tracking-widest text-xs">Chargement du catalogue...</p>
+      </div>
+    );
+  }
 
   return (
     <main className="max-w-7xl mx-auto w-full px-6 py-8">
@@ -57,7 +109,7 @@ export const Shop = () => {
                     <span>Tous les produits</span>
                   </Link>
                 </li>
-                {CATEGORIES.map(cat => (
+                {categories.map(cat => (
                   <li key={cat.id}>
                     <Link to={`/shop?cat=${cat.id}`} className={`flex items-center justify-between text-sm hover:text-primary transition-colors ${categoryId === cat.id ? 'text-primary font-semibold' : ''}`}>
                       <span>{cat.name}</span>
@@ -119,7 +171,7 @@ export const Shop = () => {
                       <input 
                         type="number" 
                         value={minPrice}
-                        onChange={(e) => handleFilterChange('min', e.target.value)}
+                        onChange={(e) => handleFilterChange('min', (e.target as HTMLInputElement).value)}
                         className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-primary/20 bg-slate-50 dark:bg-slate-900 text-sm outline-none focus:ring-2 focus:ring-primary/20"
                       />
                     </div>
@@ -128,7 +180,7 @@ export const Shop = () => {
                       <input 
                         type="number" 
                         value={maxPrice}
-                        onChange={(e) => handleFilterChange('max', e.target.value)}
+                        onChange={(e) => handleFilterChange('max', (e.target as HTMLInputElement).value)}
                         className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-primary/20 bg-slate-50 dark:bg-slate-900 text-sm outline-none focus:ring-2 focus:ring-primary/20"
                       />
                     </div>
@@ -139,7 +191,7 @@ export const Shop = () => {
                     max="2000000" 
                     step="10000"
                     value={maxPrice}
-                    onChange={(e) => handleFilterChange('max', e.target.value)}
+                    onChange={(e) => handleFilterChange('max', (e.target as HTMLInputElement).value)}
                     className="w-full accent-primary h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer"
                   />
                   <div className="flex justify-between text-[10px] text-slate-400 font-bold">

@@ -1,45 +1,112 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Helper function to check if user is admin
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if user is admin
     function isAdmin() {
-      return request.auth != null && 
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      return isAuthenticated() && (
+        (request.auth.token.email == "djibrilsagna3@gmail.com" && request.auth.token.email_verified == true) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+      );
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // ===============================================================
+    // Validation Functions
+    // ===============================================================
+
+    function isValidProduct(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             data.price is number && data.price >= 0 &&
+             data.category is string &&
+             data.brand is string &&
+             data.description is string &&
+             data.image is string &&
+             data.stock is number && data.stock >= 0;
+    }
+
+    function isValidCategory(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.description is string &&
+             data.image is string;
+    }
+
+    function isValidUser(data) {
+      return data.email is string && 
+             data.role in ['admin', 'user'];
+    }
+
+    function isValidOrder(data) {
+      return data.userId is string &&
+             data.total is number && data.total >= 0 &&
+             data.status in ['pending', 'processing', 'shipped', 'delivered', 'cancelled'] &&
+             data.paymentMethod in ['cod', 'card'] &&
+             data.createdAt is number;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    // Products collection - PUBLIC READ
+    match /products/{productId} {
+      allow read: if true;
+      allow create, update: if isAdmin() && isValidProduct(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // Categories collection - PUBLIC READ
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow create, update: if isAdmin() && isValidCategory(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // Settings collection - PUBLIC READ
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
     }
 
     // Users collection
     match /users/{userId} {
-      // Users can read and write their own profile
-      // NOTE: Allowing write here enables the "Promote to Admin" button in the UI for initial setup.
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-      // Admins can read all profiles
-      allow read: if isAdmin();
+      allow read: if isOwner(userId) || isAdmin();
+      allow create, update: if isOwner(userId) && isValidUser(request.resource.data) && 
+                               (request.resource.data.role == 'user' || isAdmin());
+      allow delete: if isAdmin();
     }
 
     // Orders collection
     match /orders/{orderId} {
-      // Users can read their own orders
-      allow read: if request.auth != null && request.auth.uid == resource.data.userId;
-      // Users can create orders
-      allow create: if request.auth != null;
-      // Admins can read and update all orders
-      allow read, update, delete: if isAdmin();
+      allow read: if (isAuthenticated() && resource.data.userId == request.auth.uid) || isAdmin();
+      allow create: if isAuthenticated() && isValidOrder(request.resource.data) && 
+                       request.resource.data.userId == request.auth.uid;
+      allow update: if isAdmin() && isValidOrder(request.resource.data);
+      allow delete: if isAdmin();
     }
-
-    // Products collection
-    match /products/{productId} {
-      // Anyone can read products
-      allow read: if true;
-      // Only admins can write products
-      allow write: if isAdmin();
-    }
-
-    // Settings collection
-    match /settings/{settingId} {
-      // Anyone can read settings
-      allow read: if true;
-      // Only admins can write settings
-      allow write: if isAdmin();
+    
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

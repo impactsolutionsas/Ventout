@@ -60,3 +60,24 @@ export interface AppSettings {
   currency: string;
   contactEmail: string;
 }
+
+export interface Slide {
+  id: string;
+  title: string;
+  subtitle: string;
+  description: string;
+  image: string;
+  link: string;
+  buttonText: string;
+  active: boolean;
+}
+
+export interface FrontendContent {
+  slides: Slide[];
+  featuredSections: {
+    id: string;
+    title: string;
+    subtitle: string;
+    active: boolean;
+  }[];
+}

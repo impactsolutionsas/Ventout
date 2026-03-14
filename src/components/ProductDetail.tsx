@@ -1,14 +1,59 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { PRODUCTS } from '../constants';
 import { useCartStore } from '../store';
-import { Star, ShieldCheck, Truck, RotateCcw, ChevronRight, ShoppingCart, Diamond } from 'lucide-react';
+import { Star, ShieldCheck, Truck, RotateCcw, ChevronRight, ShoppingCart, Diamond, Loader2 } from 'lucide-react';
 import { motion } from 'motion/react';
+import { db } from '../firebase';
+import { doc, getDoc } from 'firebase/firestore';
+import { Product } from '../types';
+import { handleFirestoreError, OperationType } from '../utils/firestore-errors';
 
 export const ProductDetail = () => {
   const { id } = useParams();
-  const product = PRODUCTS.find(p => p.id === id);
+  const [product, setProduct] = useState<Product | null>(null);
+  const [loading, setLoading] = useState(true);
   const addItem = useCartStore((state) => state.addItem);
+
+  useEffect(() => {
+    const fetchProduct = async () => {
+      if (!id) return;
+      try {
+        const docRef = doc(db, 'products', id);
+        const docSnap = await getDoc(docRef);
+        
+        if (docSnap.exists()) {
+          setProduct({ id: docSnap.id, ...docSnap.data() } as Product);
+        } else {
+          // Fallback to constants if not found in Firestore
+          const fallbackProduct = PRODUCTS.find(p => p.id === id);
+          setProduct(fallbackProduct || null);
+        }
+      } catch (error) {
+        console.error("Error fetching product:", error);
+        const fallbackProduct = PRODUCTS.find(p => p.id === id);
+        setProduct(fallbackProduct || null);
+        try {
+          handleFirestoreError(error, OperationType.GET, `products/${id}`);
+        } catch (e) {
+          // Error is re-thrown as JSON string by handleFirestoreError
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchProduct();
+  }, [id]);
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-40">
+        <Loader2 className="w-12 h-12 text-primary animate-spin mb-4" />
+        <p className="text-slate-500 font-bold uppercase tracking-widest text-xs">Chargement du produit...</p>
+      </div>
+    );
+  }
 
   if (!product) return <div className="p-20 text-center">Produit non trouvé</div>;
 

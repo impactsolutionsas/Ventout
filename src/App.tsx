@@ -10,6 +10,8 @@ import { Cart } from './components/Cart';
 import { Checkout } from './components/Checkout';
 import { Profile } from './components/Profile';
 import { Admin } from './components/Admin';
+import { Login } from './components/Login';
+import { Register } from './components/Register';
 
 export default function App() {
   const isFirebaseConfigured = !!import.meta.env.VITE_FIREBASE_API_KEY;
@@ -32,6 +34,8 @@ export default function App() {
             <Route path="/checkout" element={<Checkout />} />
             <Route path="/profile" element={<Profile />} />
             <Route path="/admin" element={<Admin />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
           </Routes>
           <Footer />
         </div>

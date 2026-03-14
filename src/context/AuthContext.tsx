@@ -1,6 +1,15 @@
 import React, { useState, useEffect } from 'react';
+import { 
+  onAuthStateChanged, 
+  signInWithPopup, 
+  signOut, 
+  User,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  sendPasswordResetEmail,
+  updateProfile
+} from 'firebase/auth';
 import { auth, googleProvider, db } from '../firebase';
-import { onAuthStateChanged, signInWithPopup, signOut, User } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 
 interface AuthContextType {
@@ -8,6 +17,9 @@ interface AuthContextType {
   isAdmin: boolean;
   loading: boolean;
   login: () => Promise<void>;
+  loginWithEmail: (email: string, pass: string) => Promise<void>;
+  registerWithEmail: (email: string, pass: string, name: string) => Promise<void>;
+  resetPassword: (email: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -62,21 +74,71 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (error: any) {
-      console.error("Login failed", error);
-      if (error.code === 'auth/invalid-api-key') {
-        alert("Clé API Firebase invalide. Veuillez vérifier votre configuration.");
-      } else if (error.code === 'auth/configuration-not-found') {
-        alert("Configuration manquante : L'authentification Google n'est pas activée dans votre projet Firebase.\n\nAction requise :\n1. Allez dans la console Firebase\n2. Authentication > Sign-in method\n3. Cliquez sur 'Ajouter un fournisseur'\n4. Sélectionnez 'Google' et activez-le.");
-      } else if (error.code === 'auth/unauthorized-domain') {
-        alert(`Domaine non autorisé : Ce domaine (${window.location.hostname}) n'est pas autorisé dans votre console Firebase.\n\nAction requise :\n1. Allez dans la console Firebase\n2. Authentication > Settings > Authorized domains\n3. Ajoutez "${window.location.hostname}" à la liste.`);
-      } else if (error.code === 'auth/popup-blocked') {
-        alert("Le popup de connexion a été bloqué par votre navigateur. Veuillez autoriser les popups pour ce site.");
-      } else if (error.code === 'auth/cancelled-popup-request') {
-        // Silent fail as user intentionally closed it
-        console.log("Login popup closed by user");
-      } else {
-        alert(`Échec de la connexion : ${error.message}`);
-      }
+      handleAuthError(error);
+    }
+  };
+
+  const loginWithEmail = async (email: string, pass: string) => {
+    try {
+      await signInWithEmailAndPassword(auth, email, pass);
+    } catch (error: any) {
+      handleAuthError(error);
+      throw error;
+    }
+  };
+
+  const registerWithEmail = async (email: string, pass: string, name: string) => {
+    try {
+      const result = await createUserWithEmailAndPassword(auth, email, pass);
+      await updateProfile(result.user, { displayName: name });
+      
+      // Create user doc in Firestore
+      const newUser = {
+        email: email,
+        role: 'user',
+        createdAt: Date.now(),
+        displayName: name
+      };
+      await setDoc(doc(db, 'users', result.user.uid), newUser);
+    } catch (error: any) {
+      handleAuthError(error);
+      throw error;
+    }
+  };
+
+  const resetPassword = async (email: string) => {
+    try {
+      await sendPasswordResetEmail(auth, email);
+    } catch (error: any) {
+      handleAuthError(error);
+      throw error;
+    }
+  };
+
+  const handleAuthError = (error: any) => {
+    console.error("Auth error:", error);
+    if (error.code === 'auth/invalid-api-key') {
+      alert("Clé API Firebase invalide. Veuillez vérifier votre configuration.");
+    } else if (error.code === 'auth/configuration-not-found') {
+      alert("Configuration manquante : L'authentification Google n'est pas activée dans votre projet Firebase.\n\nAction requise :\n1. Allez dans la console Firebase\n2. Authentication > Sign-in method\n3. Cliquez sur 'Ajouter un fournisseur'\n4. Sélectionnez 'Google' et activez-le.");
+    } else if (error.code === 'auth/unauthorized-domain') {
+      alert(`Domaine non autorisé : Ce domaine (${window.location.hostname}) n'est pas autorisé dans votre console Firebase.\n\nAction requise :\n1. Allez dans la console Firebase\n2. Authentication > Settings > Authorized domains\n3. Ajoutez "${window.location.hostname}" à la liste.`);
+    } else if (error.code === 'auth/popup-blocked') {
+      alert("Le popup de connexion a été bloqué par votre navigateur. Veuillez autoriser les popups pour ce site.");
+    } else if (error.code === 'auth/popup-closed-by-user' || error.code === 'auth/cancelled-popup-request') {
+      console.log("Login popup closed by user");
+    } else if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
+      alert("Email ou mot de passe incorrect.");
+    } else if (error.code === 'auth/email-already-in-use') {
+      alert("Cet email est déjà utilisé par un autre compte.");
+    } else if (error.code === 'auth/weak-password') {
+      alert("Le mot de passe est trop faible (6 caractères minimum).");
+    } else if (error.code === 'auth/invalid-email') {
+      alert("Format d'email invalide.");
+    } else if (error.code === 'auth/cancelled-popup-request') {
+      console.log("Login popup closed by user");
+    } else {
+      alert(`Erreur d'authentification : ${error.message}`);
     }
   };
 
@@ -89,7 +151,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ user, isAdmin, loading, login, logout }}>
+    <AuthContext.Provider value={{ 
+      user, 
+      isAdmin, 
+      loading, 
+      login, 
+      loginWithEmail, 
+      registerWithEmail, 
+      resetPassword, 
+      logout 
+    }}>
       {children}
     </AuthContext.Provider>
   );
