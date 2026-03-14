@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { useCartStore } from '../store';
 import { useAuth } from '../context/AuthContext';
-import { db } from '../firebase';
-import { collection, addDoc } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { useNavigate } from 'react-router-dom';
 import { CheckCircle2, Truck, CreditCard, Wallet } from 'lucide-react';
 import socket from '../socket';
@@ -32,36 +31,37 @@ export const Checkout = () => {
 
     try {
       const orderData = {
-        userId: user.uid,
-        userName: `${formData.firstName} ${formData.lastName}`,
-        userEmail: user.email,
+        user_id: user.id,
+        user_name: `${formData.firstName} ${formData.lastName}`,
+        user_email: user.email,
         items,
         total: total(),
         status: 'pending',
-        paymentMethod: formData.paymentMethod,
-        shippingAddress: {
+        payment_method: formData.paymentMethod,
+        shipping_address: {
           firstName: formData.firstName,
           lastName: formData.lastName,
           address: formData.address,
           city: formData.city,
           phone: formData.phone,
         },
-        createdAt: Date.now(),
+        created_at: new Date().toISOString(),
       };
 
-      const docRef = await addDoc(collection(db, 'orders'), orderData);
-      socket.emit('new_order', { id: docRef.id, ...orderData });
+      const { data, error } = await supabase
+        .from('orders')
+        .insert([orderData])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      socket.emit('new_order', { id: data.id, ...orderData });
       setOrderPlaced(true);
       clearCart();
     } catch (error: any) {
       console.error("Error placing order:", error);
-      if (error.code === 'permission-denied') {
-        alert("Erreur de permissions : Vous n'avez pas l'autorisation d'enregistrer cette commande. Veuillez vérifier les règles de sécurité Firestore.");
-      } else if (error.message.includes("offline")) {
-        alert("Impossible de passer la commande car vous semblez être hors ligne ou la base de données est inaccessible. Veuillez vérifier votre connexion.");
-      } else {
-        alert("Une erreur est survenue lors de la commande. Veuillez réessayer.");
-      }
+      alert("Une erreur est survenue lors de la commande. Veuillez réessayer.");
     } finally {
       setLoading(false);
     }
@@ -91,7 +91,7 @@ export const Checkout = () => {
         <div className="lg:col-span-7">
           <h2 className="text-3xl font-black mb-8 uppercase tracking-tight italic">Informations de Livraison</h2>
           <form onSubmit={handleSubmit} className="space-y-6">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Prénom</label>
                 <input 
@@ -123,7 +123,7 @@ export const Checkout = () => {
                 className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-primary/20 rounded-xl px-4 py-3 focus:ring-2 focus:ring-primary/20 outline-none"
               />
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <label className="text-xs font-bold uppercase tracking-widest text-slate-500">Ville</label>
                 <input 

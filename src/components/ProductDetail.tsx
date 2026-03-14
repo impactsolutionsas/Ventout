@@ -4,10 +4,8 @@ import { PRODUCTS } from '../constants';
 import { useCartStore } from '../store';
 import { Star, ShieldCheck, Truck, RotateCcw, ChevronRight, ShoppingCart, Diamond, Loader2 } from 'lucide-react';
 import { motion } from 'motion/react';
-import { db } from '../firebase';
-import { doc, getDoc } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { Product } from '../types';
-import { handleFirestoreError, OperationType } from '../utils/firestore-errors';
 
 export const ProductDetail = () => {
   const { id } = useParams();
@@ -19,13 +17,16 @@ export const ProductDetail = () => {
     const fetchProduct = async () => {
       if (!id) return;
       try {
-        const docRef = doc(db, 'products', id);
-        const docSnap = await getDoc(docRef);
+        const { data, error } = await supabase
+          .from('products')
+          .select('*')
+          .eq('id', id)
+          .single();
         
-        if (docSnap.exists()) {
-          setProduct({ id: docSnap.id, ...docSnap.data() } as Product);
+        if (data) {
+          setProduct(data as Product);
         } else {
-          // Fallback to constants if not found in Firestore
+          // Fallback to constants if not found in Supabase
           const fallbackProduct = PRODUCTS.find(p => p.id === id);
           setProduct(fallbackProduct || null);
         }
@@ -33,11 +34,6 @@ export const ProductDetail = () => {
         console.error("Error fetching product:", error);
         const fallbackProduct = PRODUCTS.find(p => p.id === id);
         setProduct(fallbackProduct || null);
-        try {
-          handleFirestoreError(error, OperationType.GET, `products/${id}`);
-        } catch (e) {
-          // Error is re-thrown as JSON string by handleFirestoreError
-        }
       } finally {
         setLoading(false);
       }
@@ -128,32 +124,32 @@ export const ProductDetail = () => {
             </button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-10 border-t border-slate-100 dark:border-primary/10">
-            <div className="flex flex-col items-center text-center gap-3">
-              <div className="w-12 h-12 bg-slate-50 dark:bg-primary/5 rounded-full flex items-center justify-center text-primary">
-                <Truck className="w-6 h-6" />
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 md:gap-6 pt-10 border-t border-slate-100 dark:border-primary/10">
+            <div className="flex flex-col items-center text-center gap-2 md:gap-3">
+              <div className="w-10 h-10 md:w-12 md:h-12 bg-slate-50 dark:bg-primary/5 rounded-full flex items-center justify-center text-primary">
+                <Truck className="w-5 h-5 md:w-6 md:h-6" />
               </div>
               <div>
-                <p className="text-[10px] font-black uppercase tracking-widest mb-1">Livraison Express</p>
-                <p className="text-[10px] text-slate-500">Gratuite dès 500€</p>
+                <p className="text-[9px] md:text-[10px] font-black uppercase tracking-widest mb-0.5 md:mb-1">Livraison Express</p>
+                <p className="text-[9px] md:text-[10px] text-slate-500">Gratuite dès 500€</p>
               </div>
             </div>
-            <div className="flex flex-col items-center text-center gap-3">
-              <div className="w-12 h-12 bg-slate-50 dark:bg-primary/5 rounded-full flex items-center justify-center text-primary">
-                <ShieldCheck className="w-6 h-6" />
+            <div className="flex flex-col items-center text-center gap-2 md:gap-3">
+              <div className="w-10 h-10 md:w-12 md:h-12 bg-slate-50 dark:bg-primary/5 rounded-full flex items-center justify-center text-primary">
+                <ShieldCheck className="w-5 h-5 md:w-6 md:h-6" />
               </div>
               <div>
-                <p className="text-[10px] font-black uppercase tracking-widest mb-1">Garantie 2 Ans</p>
-                <p className="text-[10px] text-slate-500">SAV Premium Inclus</p>
+                <p className="text-[9px] md:text-[10px] font-black uppercase tracking-widest mb-0.5 md:mb-1">Garantie 2 Ans</p>
+                <p className="text-[9px] md:text-[10px] text-slate-500">SAV Premium Inclus</p>
               </div>
             </div>
-            <div className="flex flex-col items-center text-center gap-3">
-              <div className="w-12 h-12 bg-slate-50 dark:bg-primary/5 rounded-full flex items-center justify-center text-primary">
-                <RotateCcw className="w-6 h-6" />
+            <div className="flex flex-col items-center text-center gap-2 md:gap-3 col-span-2 md:col-span-1 mt-4 md:mt-0">
+              <div className="w-10 h-10 md:w-12 md:h-12 bg-slate-50 dark:bg-primary/5 rounded-full flex items-center justify-center text-primary">
+                <RotateCcw className="w-5 h-5 md:w-6 md:h-6" />
               </div>
               <div>
-                <p className="text-[10px] font-black uppercase tracking-widest mb-1">Retours Faciles</p>
-                <p className="text-[10px] text-slate-500">Sous 14 jours</p>
+                <p className="text-[9px] md:text-[10px] font-black uppercase tracking-widest mb-0.5 md:mb-1">Retours Faciles</p>
+                <p className="text-[9px] md:text-[10px] text-slate-500">Sous 14 jours</p>
               </div>
             </div>
           </div>
@@ -163,7 +159,7 @@ export const ProductDetail = () => {
       <section className="mt-24">
         <h3 className="text-2xl font-black uppercase italic mb-10 border-b border-primary w-fit pb-2">Spécifications Techniques</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-20 gap-y-6">
-          {Object.entries(product.specs).map(([key, value]) => (
+          {product.specs && Object.entries(product.specs).map(([key, value]) => (
             <div key={key} className="flex justify-between py-4 border-b border-slate-100 dark:border-primary/5">
               <span className="text-sm font-bold uppercase tracking-widest text-slate-500">{key}</span>
               <span className="text-sm font-black text-slate-900 dark:text-white">{value}</span>

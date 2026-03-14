@@ -13,16 +13,16 @@ import { Admin } from './components/Admin';
 import { Login } from './components/Login';
 import { Register } from './components/Register';
 
-export default function App() {
-  const isFirebaseConfigured = !!import.meta.env.VITE_FIREBASE_API_KEY;
+import { isSupabaseConfigured } from './supabase';
 
+export default function App() {
   return (
     <AuthProvider>
       <Router>
-        <div className="min-h-screen bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans selection:bg-primary selection:text-white">
-          {!isFirebaseConfigured && (
+        <div className="min-h-screen overflow-x-hidden bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans selection:bg-primary selection:text-white">
+          {!isSupabaseConfigured && (
             <div className="bg-amber-500 text-white text-center py-2 text-xs font-bold uppercase tracking-widest">
-              Configuration Firebase requise : Veuillez ajouter vos clés API dans les paramètres.
+              Configuration Supabase requise : Veuillez ajouter VITE_SUPABASE_URL et VITE_SUPABASE_ANON_KEY dans les paramètres.
             </div>
           )}
           <Navbar />

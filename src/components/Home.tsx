@@ -4,10 +4,8 @@ import { ArrowRight, ChevronLeft, ChevronRight, Star, ShoppingCart, Zap, Trendin
 import { CATEGORIES, PRODUCTS } from '../constants';
 import { motion, AnimatePresence } from 'motion/react';
 import { useCartStore } from '../store';
-import { db } from '../firebase';
-import { collection, getDocs, onSnapshot, doc } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { Product, Category, FrontendContent } from '../types';
-import { handleFirestoreError, OperationType } from '../utils/firestore-errors';
 
 export const Home = () => {
   const addItem = useCartStore((state) => state.addItem);
@@ -20,48 +18,75 @@ export const Home = () => {
   useEffect(() => {
     setLoading(true);
 
-    const unsubProducts = onSnapshot(collection(db, 'products'), 
-      (snap) => {
-        const productsData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product));
-        setProducts(productsData.length > 0 ? productsData : PRODUCTS);
-        setLoading(false);
-      },
-      (err) => {
-        console.error("Error fetching products:", err);
+    const fetchData = async () => {
+      // Fetch Products
+      const { data: productsData, error: productsError } = await supabase
+        .from('products')
+        .select('*');
+      
+      if (productsError) {
+        console.error("Error fetching products:", productsError);
         setProducts(PRODUCTS);
-        handleFirestoreError(err, OperationType.GET, 'products');
-        setLoading(false);
+      } else {
+        setProducts(productsData && productsData.length > 0 ? productsData : PRODUCTS);
       }
-    );
 
-    const unsubCategories = onSnapshot(collection(db, 'categories'), 
-      (snap) => {
-        const catsData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Category));
-        setCategories(catsData.length > 0 ? catsData : CATEGORIES);
-      },
-      (err) => {
-        console.error("Error fetching categories:", err);
+      // Fetch Categories
+      const { data: catsData, error: catsError } = await supabase
+        .from('categories')
+        .select('*');
+      
+      if (catsError) {
+        console.error("Error fetching categories:", catsError);
         setCategories(CATEGORIES);
-        handleFirestoreError(err, OperationType.GET, 'categories');
+      } else {
+        setCategories(catsData && catsData.length > 0 ? catsData : CATEGORIES);
       }
-    );
 
-    const unsubFrontend = onSnapshot(doc(db, 'settings', 'frontend'), 
-      (snap) => {
-        if (snap.exists()) {
-          setFrontendContent(snap.data() as FrontendContent);
-        }
-      },
-      (err) => {
-        console.error("Error fetching frontend settings:", err);
-        handleFirestoreError(err, OperationType.GET, 'settings/frontend');
+      // Fetch Frontend Settings
+      const { data: settingsData, error: settingsError } = await supabase
+        .from('settings')
+        .select('content')
+        .eq('id', 'frontend')
+        .single();
+      
+      if (settingsError) {
+        console.error("Error fetching frontend settings:", settingsError);
+      } else if (settingsData) {
+        setFrontendContent(settingsData.content as FrontendContent);
       }
-    );
+
+      setLoading(false);
+    };
+
+    fetchData();
+
+    // Set up real-time subscriptions
+    const productsChannel = supabase
+      .channel('products-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, (payload) => {
+        fetchData(); // Refresh all for simplicity, or handle payload specifically
+      })
+      .subscribe();
+
+    const categoriesChannel = supabase
+      .channel('categories-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, (payload) => {
+        fetchData();
+      })
+      .subscribe();
+
+    const settingsChannel = supabase
+      .channel('settings-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'settings', filter: 'id=eq.frontend' }, (payload) => {
+        fetchData();
+      })
+      .subscribe();
 
     return () => {
-      unsubProducts();
-      unsubCategories();
-      unsubFrontend();
+      supabase.removeChannel(productsChannel);
+      supabase.removeChannel(categoriesChannel);
+      supabase.removeChannel(settingsChannel);
     };
   }, []);
 
@@ -167,16 +192,16 @@ export const Home = () => {
                         <span className="inline-flex items-center gap-2 bg-primary/20 text-primary px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest mb-6 border border-primary/30">
                           <Sparkles className="w-3 h-3" /> {displaySlides[currentSlide].subtitle}
                         </span>
-                        <h2 className="text-4xl md:text-7xl font-black text-white leading-none mb-6 max-w-2xl uppercase italic tracking-tighter">
+                        <h2 className="text-3xl md:text-7xl font-black text-white leading-tight md:leading-none mb-4 md:mb-6 max-w-2xl uppercase italic tracking-tighter">
                           {displaySlides[currentSlide].title}
                         </h2>
-                        <p className="text-slate-300 text-lg mb-10 max-w-md font-medium leading-relaxed line-clamp-2">
+                        <p className="text-slate-300 text-sm md:text-lg mb-6 md:mb-10 max-w-md font-medium leading-relaxed line-clamp-2">
                           {displaySlides[currentSlide].description}
                         </p>
                         <div className="flex flex-wrap gap-4">
                           <Link 
                             to={displaySlides[currentSlide].link}
-                            className="bg-primary text-white px-10 py-4 rounded-2xl font-black uppercase tracking-widest text-sm hover:scale-105 transition-transform shadow-xl shadow-primary/20"
+                            className="w-full sm:w-auto bg-primary text-white px-10 py-4 rounded-2xl font-black uppercase tracking-widest text-xs md:text-sm hover:scale-105 transition-transform shadow-xl shadow-primary/20 text-center"
                           >
                             {displaySlides[currentSlide].buttonText}
                           </Link>
@@ -200,22 +225,22 @@ export const Home = () => {
                         <span className="inline-flex items-center gap-2 bg-primary/20 text-primary px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest mb-6 border border-primary/30">
                           <Sparkles className="w-3 h-3" /> Dernier Arrivage
                         </span>
-                        <h2 className="text-4xl md:text-7xl font-black text-white leading-none mb-6 max-w-2xl uppercase italic tracking-tighter">
+                        <h2 className="text-3xl md:text-7xl font-black text-white leading-tight md:leading-none mb-4 md:mb-6 max-w-2xl uppercase italic tracking-tighter">
                           {latestProducts[currentSlide].name}
                         </h2>
-                        <p className="text-slate-300 text-lg mb-10 max-w-md font-medium leading-relaxed line-clamp-2">
+                        <p className="text-slate-300 text-sm md:text-lg mb-6 md:mb-10 max-w-md font-medium leading-relaxed line-clamp-2">
                           {latestProducts[currentSlide].description}
                         </p>
-                        <div className="flex flex-wrap gap-4">
+                        <div className="flex flex-col sm:flex-row gap-4">
                           <Link 
                             to={`/product/${latestProducts[currentSlide].id}`}
-                            className="bg-primary text-white px-10 py-4 rounded-2xl font-black uppercase tracking-widest text-sm hover:scale-105 transition-transform shadow-xl shadow-primary/20"
+                            className="w-full sm:w-auto bg-primary text-white px-10 py-4 rounded-2xl font-black uppercase tracking-widest text-xs md:text-sm hover:scale-105 transition-transform shadow-xl shadow-primary/20 text-center"
                           >
                             Voir le produit
                           </Link>
                           <button 
                             onClick={() => addItem(latestProducts[currentSlide])}
-                            className="bg-white/10 backdrop-blur-md border border-white/20 text-white px-10 py-4 rounded-2xl font-black uppercase tracking-widest text-sm hover:bg-white/20 transition-all"
+                            className="w-full sm:w-auto bg-white/10 backdrop-blur-md border border-white/20 text-white px-10 py-4 rounded-2xl font-black uppercase tracking-widest text-xs md:text-sm hover:bg-white/20 transition-all"
                           >
                             Ajouter au panier
                           </button>
@@ -232,18 +257,18 @@ export const Home = () => {
             </AnimatePresence>
 
             {/* Slider Controls */}
-            <div className="absolute bottom-8 right-8 flex gap-3 z-10">
+            <div className="absolute bottom-6 md:bottom-8 right-6 md:right-8 flex gap-2 md:gap-3 z-10">
               <button 
                 onClick={prevSlide}
-                className="w-12 h-12 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center text-white hover:bg-primary hover:border-primary transition-all"
+                className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center text-white hover:bg-primary hover:border-primary transition-all"
               >
-                <ChevronLeft className="w-6 h-6" />
+                <ChevronLeft className="w-5 h-5 md:w-6 md:h-6" />
               </button>
               <button 
                 onClick={nextSlide}
-                className="w-12 h-12 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center text-white hover:bg-primary hover:border-primary transition-all"
+                className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center text-white hover:bg-primary hover:border-primary transition-all"
               >
-                <ChevronRight className="w-6 h-6" />
+                <ChevronRight className="w-5 h-5 md:w-6 md:h-6" />
               </button>
             </div>
 
@@ -299,7 +324,7 @@ export const Home = () => {
                   Voir tout <ArrowRight className="w-4 h-4" />
                 </Link>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
                 {topProducts.map((product) => (
                   <ProductCard key={product.id} product={product} addItem={addItem} />
                 ))}
@@ -322,7 +347,7 @@ export const Home = () => {
                   {getSection('featured')?.subtitle && <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">{getSection('featured')?.subtitle}</p>}
                 </div>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
                 {featuredProducts.map((product) => (
                   <ProductCard key={product.id} product={product} addItem={addItem} />
                 ))}
@@ -382,7 +407,7 @@ export const Home = () => {
                   Voir tout <ArrowRight className="w-4 h-4" />
                 </Link>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
                 {latestProducts.map((product) => (
                   <ProductCard key={product.id} product={product} addItem={addItem} />
                 ))}
@@ -417,14 +442,14 @@ const ProductCard = ({ product, addItem }: any) => {
   return (
     <motion.div 
       whileHover={{ y: -10 }}
-      className="group bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-200 dark:border-primary/20 overflow-hidden hover:shadow-2xl transition-all duration-500"
+      className="group bg-white dark:bg-slate-900 rounded-2xl md:rounded-[2rem] border border-slate-200 dark:border-primary/20 overflow-hidden hover:shadow-2xl transition-all duration-500"
     >
-      <div className="relative aspect-square p-6 flex items-center justify-center bg-slate-50 dark:bg-slate-800/50">
+      <div className="relative aspect-square p-3 md:p-6 flex items-center justify-center bg-slate-50 dark:bg-slate-800/50">
         {product.new && (
-          <span className="absolute top-4 left-4 bg-primary text-white text-[8px] font-black px-3 py-1 rounded-full uppercase italic z-10">New</span>
+          <span className="absolute top-2 left-2 md:top-4 md:left-4 bg-primary text-white text-[7px] md:text-[8px] font-black px-2 md:px-3 py-0.5 md:py-1 rounded-full uppercase italic z-10">New</span>
         )}
         <img src={product.image} alt={product.name} className="max-w-full h-auto object-contain group-hover:scale-110 transition-transform duration-500" />
-        <div className="absolute inset-x-4 bottom-4 translate-y-16 group-hover:translate-y-0 opacity-0 group-hover:opacity-100 transition-all duration-300">
+        <div className="absolute inset-x-2 md:inset-x-4 bottom-2 md:bottom-4 translate-y-16 group-hover:translate-y-0 opacity-0 group-hover:opacity-100 transition-all duration-300 hidden md:block">
           <button 
             onClick={() => addItem(product)}
             className="w-full bg-slate-950 dark:bg-white text-white dark:text-slate-950 py-4 rounded-xl font-black uppercase text-[10px] tracking-widest flex items-center justify-center gap-2 shadow-xl"
@@ -432,22 +457,29 @@ const ProductCard = ({ product, addItem }: any) => {
             <ShoppingCart className="w-4 h-4" /> Ajouter
           </button>
         </div>
+        {/* Mobile Add to Cart Button */}
+        <button 
+          onClick={() => addItem(product)}
+          className="md:hidden absolute bottom-2 right-2 bg-primary text-white p-2 rounded-lg shadow-lg z-10"
+        >
+          <ShoppingCart className="w-4 h-4" />
+        </button>
       </div>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">{product.brand}</span>
+      <div className="p-3 md:p-6">
+        <div className="flex items-center justify-between mb-1 md:mb-2">
+          <span className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-slate-400">{product.brand}</span>
           <div className="flex items-center gap-1 text-amber-500">
-            <Star className="w-3 h-3 fill-current" />
-            <span className="text-[10px] font-bold">{product.rating}</span>
+            <Star className="w-2.5 h-2.5 md:w-3 md:h-3 fill-current" />
+            <span className="text-[8px] md:text-[10px] font-bold">{product.rating}</span>
           </div>
         </div>
-        <Link to={`/product/${product.id}`} className="text-sm font-black uppercase italic tracking-tighter line-clamp-1 hover:text-primary transition-colors">
+        <Link to={`/product/${product.id}`} className="text-[10px] md:text-sm font-black uppercase italic tracking-tighter line-clamp-1 hover:text-primary transition-colors">
           {product.name}
         </Link>
-        <div className="mt-4 flex items-center justify-between">
-          <span className="text-lg font-black text-primary">{product.price.toLocaleString()} CFA</span>
+        <div className="mt-2 md:mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+          <span className="text-xs md:text-lg font-black text-primary">{product.price.toLocaleString()} CFA</span>
           {product.oldPrice && (
-            <span className="text-xs text-slate-400 line-through">{product.oldPrice.toLocaleString()} CFA</span>
+            <span className="text-[8px] md:text-xs text-slate-400 line-through">{product.oldPrice.toLocaleString()} CFA</span>
           )}
         </div>
       </div>

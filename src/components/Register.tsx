@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Mail, Lock, User, ArrowRight, Chrome } from 'lucide-react';
+import { Mail, Lock, User, ArrowRight } from 'lucide-react';
 import { motion } from 'motion/react';
 
 export const Register = () => {
@@ -10,7 +10,7 @@ export const Register = () => {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const { registerWithEmail, login } = useAuth();
+  const { registerWithEmail } = useAuth();
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -27,15 +27,6 @@ export const Register = () => {
       // Error handled in AuthContext
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleGoogleLogin = async () => {
-    try {
-      await login();
-      navigate('/');
-    } catch (error) {
-      // Error handled in AuthContext
     }
   };
 
@@ -122,25 +113,6 @@ export const Register = () => {
               <ArrowRight className="w-5 h-5" />
             </button>
           </form>
-
-          <div className="relative my-10">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-slate-200 dark:border-primary/10"></div>
-            </div>
-            <div className="relative flex justify-center text-[10px] font-black uppercase tracking-widest">
-              <span className="bg-white dark:bg-slate-900 px-4 text-slate-400">Ou s'inscrire avec</span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4">
-            <button 
-              onClick={handleGoogleLogin}
-              className="flex items-center justify-center gap-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-primary/10 py-4 rounded-2xl font-bold text-sm hover:bg-slate-100 dark:hover:bg-slate-700 transition-all"
-            >
-              <Chrome className="w-5 h-5" />
-              Google
-            </button>
-          </div>
 
           <p className="mt-10 text-center text-sm text-slate-500">
             Déjà un compte ?{' '}

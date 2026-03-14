@@ -1,9 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { db } from '../firebase';
-import { collection, query, getDocs, updateDoc, doc, orderBy, limit, addDoc, setDoc, getDoc, deleteDoc, Timestamp, onSnapshot } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { storage } from '../firebase';
+import { supabase } from '../supabase';
 import { Order, Product, Category, Slide, FrontendContent } from '../types';
 import { PRODUCTS, CATEGORIES } from '../constants';
 import { 
@@ -20,10 +17,9 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'motion/react';
-import { handleFirestoreError, OperationType } from '../utils/firestore-errors';
 
 export const Admin = () => {
-  const { isAdmin } = useAuth();
+  const { isAdmin, user } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
@@ -77,15 +73,33 @@ export const Admin = () => {
     specs: {}
   });
 
+  const uploadToSupabase = async (file: File, bucket: string) => {
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${Math.random()}.${fileExt}`;
+    const filePath = `${fileName}`;
+
+    const { error: uploadError, data } = await supabase.storage
+      .from(bucket)
+      .upload(filePath, file);
+
+    if (uploadError) {
+      throw uploadError;
+    }
+
+    const { data: { publicUrl } } = supabase.storage
+      .from(bucket)
+      .getPublicUrl(filePath);
+
+    return publicUrl;
+  };
+
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setUploading(true);
     try {
-      const storageRef = ref(storage, `products/${Date.now()}_${file.name}`);
-      await uploadBytes(storageRef, file);
-      const url = await getDownloadURL(storageRef);
+      const url = await uploadToSupabase(file, 'products');
       setNewProduct(prev => ({ ...prev, image: url }));
       alert("Image du produit téléchargée !");
     } catch (error) {
@@ -102,9 +116,7 @@ export const Admin = () => {
 
     setUploading(true);
     try {
-      const storageRef = ref(storage, `categories/${Date.now()}_${file.name}`);
-      await uploadBytes(storageRef, file);
-      const url = await getDownloadURL(storageRef);
+      const url = await uploadToSupabase(file, 'categories');
       setNewCategory(prev => ({ ...prev, image: url }));
       alert("Image de catégorie téléchargée !");
     } catch (error) {
@@ -136,89 +148,105 @@ export const Admin = () => {
     };
   }, [isAdmin]);
 
-  useEffect(() => {
+  const fetchData = async () => {
     if (!isAdmin) return;
-
     setLoading(true);
 
-    // Real-time listeners
-    const unsubOrders = onSnapshot(query(collection(db, 'orders'), orderBy('createdAt', 'desc')), 
-      (snap) => {
-        setOrders(snap.docs.map(d => ({ id: d.id, ...d.data() } as Order)));
-        setLoading(false);
-      },
-      (err) => handleFirestoreError(err, OperationType.GET, 'orders')
-    );
+    try {
+      // Fetch Orders
+      const { data: ordersData } = await supabase
+        .from('orders')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (ordersData) setOrders(ordersData.map(o => ({ ...o })));
 
-    const unsubProducts = onSnapshot(collection(db, 'products'), 
-      (snap) => {
-        const productsData = snap.docs.map(d => ({ id: d.id, ...d.data() } as Product));
-        setProducts(productsData.length > 0 ? productsData : []);
-      },
-      (err) => handleFirestoreError(err, OperationType.GET, 'products')
-    );
+      // Fetch Products
+      const { data: productsData } = await supabase
+        .from('products')
+        .select('*');
+      if (productsData) setProducts(productsData);
 
-    const unsubUsers = onSnapshot(collection(db, 'users'), 
-      (snap) => {
-        setAllUsers(snap.docs.map(d => ({ id: d.id, ...d.data() } as UserProfile)));
-      },
-      (err) => handleFirestoreError(err, OperationType.GET, 'users')
-    );
+      // Fetch Users
+      const { data: usersData } = await supabase
+        .from('profiles')
+        .select('*');
+      if (usersData) setAllUsers(usersData.map(u => ({ 
+        id: u.id, 
+        email: u.email, 
+        role: u.role, 
+        display_name: u.display_name,
+        created_at: u.created_at
+      })));
 
-    const unsubCategories = onSnapshot(collection(db, 'categories'), 
-      (snap) => {
-        const catsData = snap.docs.map(d => ({ id: d.id, ...d.data() } as Category));
-        setCategories(catsData.length > 0 ? catsData : CATEGORIES);
-      },
-      (err) => handleFirestoreError(err, OperationType.GET, 'categories')
-    );
+      // Fetch Categories
+      const { data: catsData } = await supabase
+        .from('categories')
+        .select('*');
+      if (catsData) setCategories(catsData.length > 0 ? catsData : CATEGORIES);
 
-    const unsubSettings = onSnapshot(doc(db, 'settings', 'general'), 
-      (snap) => {
-        if (snap.exists()) {
-          setSettings(snap.data() as AppSettings);
-        }
-      },
-      (err) => handleFirestoreError(err, OperationType.GET, 'settings/general')
-    );
+      // Fetch Settings
+      const { data: genSettings } = await supabase
+        .from('settings')
+        .select('content')
+        .eq('id', 'general')
+        .single();
+      if (genSettings) setSettings(genSettings.content as AppSettings);
 
-    const unsubFrontend = onSnapshot(doc(db, 'settings', 'frontend'), 
-      (snap) => {
-        if (snap.exists()) {
-          setFrontendContent(snap.data() as FrontendContent);
-        }
-      },
-      (err) => handleFirestoreError(err, OperationType.GET, 'settings/frontend')
-    );
+      const { data: frontSettings } = await supabase
+        .from('settings')
+        .select('content')
+        .eq('id', 'frontend')
+        .single();
+      if (frontSettings) setFrontendContent(frontSettings.content as FrontendContent);
+
+    } catch (error) {
+      console.error("Error fetching admin data:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+
+    // Real-time subscriptions
+    const channels = [
+      supabase.channel('admin-orders').on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, fetchData).subscribe(),
+      supabase.channel('admin-products').on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, fetchData).subscribe(),
+      supabase.channel('admin-profiles').on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, fetchData).subscribe(),
+      supabase.channel('admin-categories').on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, fetchData).subscribe(),
+      supabase.channel('admin-settings').on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, fetchData).subscribe(),
+    ];
 
     return () => {
-      unsubOrders();
-      unsubProducts();
-      unsubUsers();
-      unsubCategories();
-      unsubSettings();
-      unsubFrontend();
+      channels.forEach(channel => supabase.removeChannel(channel));
     };
   }, [isAdmin]);
 
   const updateOrderStatus = async (orderId: string, newStatus: Order['status']) => {
     try {
-      await updateDoc(doc(db, 'orders', orderId), { status: newStatus });
+      const { error } = await supabase
+        .from('orders')
+        .update({ status: newStatus })
+        .eq('id', orderId);
+
+      if (error) throw error;
       setOrders(orders.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
     } catch (error: any) {
       console.error("Update error:", error);
-      if (error.code === 'permission-denied') {
-        alert("Action refusée : Vous n'avez pas les permissions pour modifier cette commande. Vérifiez vos règles Firestore ou assurez-vous d'être bien administrateur.");
-      } else {
-        alert("Erreur lors de la mise à jour du statut");
-      }
+      alert("Erreur lors de la mise à jour du statut");
     }
   };
 
   const deleteProduct = async (productId: string) => {
     if (!window.confirm("Êtes-vous sûr de vouloir supprimer ce produit ?")) return;
     try {
-      await deleteDoc(doc(db, 'products', productId));
+      const { error } = await supabase
+        .from('products')
+        .delete()
+        .eq('id', productId);
+
+      if (error) throw error;
       setProducts(products.filter(p => p.id !== productId));
       alert("Produit supprimé !");
     } catch (error) {
@@ -234,21 +262,22 @@ export const Admin = () => {
       // Seed Categories
       for (const category of CATEGORIES) {
         const { id, ...catData } = category;
-        await setDoc(doc(db, 'categories', id), {
+        await supabase.from('categories').upsert({
           ...catData,
-          createdAt: Date.now()
+          created_at: new Date().toISOString()
         });
       }
 
       // Seed Products
       for (const product of PRODUCTS) {
         const { id, ...productData } = product;
-        await addDoc(collection(db, 'products'), {
+        await supabase.from('products').insert({
           ...productData,
-          createdAt: Date.now()
+          created_at: new Date().toISOString()
         });
       }
       alert("Base de données initialisée !");
+      fetchData();
     } catch (error) {
       console.error("Error seeding database:", error);
       alert("Erreur lors de l'initialisation");
@@ -258,21 +287,24 @@ export const Admin = () => {
   };
 
   const promoteToAdmin = async () => {
-    const { auth } = await import('../firebase');
-    if (!auth.currentUser) return;
+    if (!user) return;
     
     setIsPromoting(true);
     try {
-      await setDoc(doc(db, 'users', auth.currentUser.uid), {
-        role: 'admin',
-        email: auth.currentUser.email,
-        updatedAt: Date.now()
-      }, { merge: true });
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          role: 'admin',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', user.id);
+
+      if (error) throw error;
       alert("Succès ! Vous avez été promu administrateur. La page va s'actualiser.");
       window.location.reload();
     } catch (error) {
       console.error("Promotion error:", error);
-      alert("Erreur lors de la promotion. Vérifiez que vos règles Firestore autorisent l'écriture sur votre propre document utilisateur.");
+      alert("Erreur lors de la promotion.");
     } finally {
       setIsPromoting(false);
     }
@@ -345,19 +377,26 @@ export const Admin = () => {
     try {
       const productData = {
         ...newProduct,
-        updatedAt: Date.now()
+        updated_at: new Date().toISOString()
       };
 
       if (editingProduct) {
-        await updateDoc(doc(db, 'products', editingProduct.id), productData);
+        const { error } = await supabase
+          .from('products')
+          .update(productData)
+          .eq('id', editingProduct.id);
+        if (error) throw error;
         alert("Produit mis à jour !");
       } else {
-        await addDoc(collection(db, 'products'), {
-          ...productData,
-          createdAt: Date.now(),
-          rating: 5,
-          reviewsCount: 0
-        });
+        const { error } = await supabase
+          .from('products')
+          .insert([{
+            ...productData,
+            created_at: new Date().toISOString(),
+            rating: 5,
+            reviews_count: 0
+          }]);
+        if (error) throw error;
         alert("Produit ajouté avec succès !");
       }
       setIsAddingProduct(false);
@@ -372,6 +411,7 @@ export const Admin = () => {
         stock: 10,
         specs: {}
       });
+      fetchData();
     } catch (error) {
       console.error("Error saving product:", error);
       alert("Erreur lors de l'enregistrement du produit");
@@ -384,21 +424,29 @@ export const Admin = () => {
     e.preventDefault();
     try {
       if (editingCategory) {
-        await updateDoc(doc(db, 'categories', editingCategory.id), {
-          ...newCategory,
-          updatedAt: Date.now()
-        });
+        const { error } = await supabase
+          .from('categories')
+          .update({
+            ...newCategory,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', editingCategory.id);
+        if (error) throw error;
         alert("Catégorie mise à jour !");
       } else {
-        await addDoc(collection(db, 'categories'), {
-          ...newCategory,
-          createdAt: Date.now()
-        });
+        const { error } = await supabase
+          .from('categories')
+          .insert([{
+            ...newCategory,
+            created_at: new Date().toISOString()
+          }]);
+        if (error) throw error;
         alert("Catégorie ajoutée !");
       }
       setIsAddingCategory(false);
       setEditingCategory(null);
       setNewCategory({ name: '', description: '', image: '' });
+      fetchData();
     } catch (error) {
       console.error("Error saving category:", error);
       alert("Erreur lors de l'enregistrement de la catégorie");
@@ -408,20 +456,43 @@ export const Admin = () => {
   const deleteCategory = async (id: string) => {
     if (!window.confirm("Supprimer cette catégorie ?")) return;
     try {
-      await deleteDoc(doc(db, 'categories', id));
+      const { error } = await supabase
+        .from('categories')
+        .delete()
+        .eq('id', id);
+      if (error) throw error;
       alert("Catégorie supprimée");
+      fetchData();
     } catch (error) {
       console.error("Error deleting category:", error);
     }
   };
 
+  const deleteUser = async (userId: string) => {
+    if (!window.confirm("Êtes-vous sûr de vouloir supprimer cet utilisateur ?")) return;
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .delete()
+        .eq('id', userId);
+      if (error) throw error;
+    } catch (error) {
+      console.error("Error deleting user:", error);
+      alert("Erreur lors de la suppression de l'utilisateur.");
+    }
+  };
+
   const updateUserRole = async (userId: string, newRole: 'admin' | 'user') => {
     try {
-      await updateDoc(doc(db, 'users', userId), { role: newRole });
+      const { error } = await supabase
+        .from('profiles')
+        .update({ role: newRole })
+        .eq('id', userId);
+      if (error) throw error;
       alert(`Rôle mis à jour avec succès : ${newRole}`);
+      fetchData();
     } catch (error) {
       console.error("Error updating role:", error);
-      handleFirestoreError(error, OperationType.UPDATE, `users/${userId}`);
     }
   };
 
@@ -431,9 +502,7 @@ export const Admin = () => {
 
     setUploading(true);
     try {
-      const storageRef = ref(storage, `slides/${Date.now()}_${file.name}`);
-      await uploadBytes(storageRef, file);
-      const url = await getDownloadURL(storageRef);
+      const url = await uploadToSupabase(file, 'slides');
       setNewSlide(prev => ({ ...prev, image: url }));
       alert("Image du slide téléchargée !");
     } catch (error) {
@@ -446,11 +515,14 @@ export const Admin = () => {
 
   const saveFrontendContent = async (updatedContent: FrontendContent) => {
     try {
-      await setDoc(doc(db, 'settings', 'frontend'), updatedContent);
+      const { error } = await supabase
+        .from('settings')
+        .upsert({ id: 'frontend', content: updatedContent });
+      if (error) throw error;
       alert("Contenu frontend mis à jour !");
+      fetchData();
     } catch (error) {
       console.error("Error saving frontend content:", error);
-      handleFirestoreError(error, OperationType.UPDATE, 'settings/frontend');
     }
   };
 
@@ -522,8 +594,12 @@ export const Admin = () => {
   const handleUpdateSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await setDoc(doc(db, 'settings', 'general'), settings);
+      const { error } = await supabase
+        .from('settings')
+        .upsert({ id: 'general', content: settings });
+      if (error) throw error;
       alert("Paramètres mis à jour !");
+      fetchData();
     } catch (error) {
       console.error("Error updating settings:", error);
       alert("Erreur lors de la mise à jour des paramètres");
@@ -557,58 +633,58 @@ export const Admin = () => {
 
       <div className="flex flex-col lg:flex-row gap-10">
         <aside className="w-full lg:w-72 flex-shrink-0">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-sm border border-slate-200 dark:border-primary/10 sticky top-24">
-            <div className="flex items-center gap-3 mb-10 px-4">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-sm border border-slate-200 dark:border-primary/10 lg:sticky lg:top-24">
+            <div className="flex items-center gap-3 mb-6 lg:mb-10 lg:px-4">
               <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center text-white font-black italic">V</div>
               <h2 className="text-xl font-black uppercase italic tracking-tighter">Admin Panel</h2>
             </div>
             
-            <nav className="space-y-1">
+            <nav className="flex lg:flex-col gap-2 overflow-x-auto lg:overflow-x-visible pb-2 lg:pb-0 no-scrollbar">
               <button 
                 onClick={() => setActiveTab('dashboard')}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'dashboard' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                className={`flex-shrink-0 lg:w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'dashboard' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
               >
-                <LayoutDashboard className="w-5 h-5" /> Dashboard
+                <LayoutDashboard className="w-5 h-5" /> <span className="whitespace-nowrap">Dashboard</span>
               </button>
               <button 
                 onClick={() => setActiveTab('orders')}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'orders' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                className={`flex-shrink-0 lg:w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'orders' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
               >
-                <ShoppingBag className="w-5 h-5" /> Commandes
+                <ShoppingBag className="w-5 h-5" /> <span className="whitespace-nowrap">Commandes</span>
                 {stats.pendingOrders > 0 && (
-                  <span className="ml-auto bg-red-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full">{stats.pendingOrders}</span>
+                  <span className="ml-2 lg:ml-auto bg-red-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full">{stats.pendingOrders}</span>
                 )}
               </button>
               <button 
                 onClick={() => setActiveTab('products')}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'products' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                className={`flex-shrink-0 lg:w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'products' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
               >
-                <Package className="w-5 h-5" /> Produits
+                <Package className="w-5 h-5" /> <span className="whitespace-nowrap">Produits</span>
               </button>
               <button 
                 onClick={() => setActiveTab('categories')}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'categories' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                className={`flex-shrink-0 lg:w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'categories' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
               >
-                <Tag className="w-5 h-5" /> Catégories
+                <Tag className="w-5 h-5" /> <span className="whitespace-nowrap">Catégories</span>
               </button>
               <button 
                 onClick={() => setActiveTab('users')}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'users' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                className={`flex-shrink-0 lg:w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'users' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
               >
-                <Users className="w-5 h-5" /> Utilisateurs
+                <Users className="w-5 h-5" /> <span className="whitespace-nowrap">Utilisateurs</span>
               </button>
               <button 
                 onClick={() => setActiveTab('frontend')}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'frontend' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                className={`flex-shrink-0 lg:w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'frontend' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
               >
-                <Monitor className="w-5 h-5" /> Frontend
+                <Monitor className="w-5 h-5" /> <span className="whitespace-nowrap">Frontend</span>
               </button>
-              <div className="pt-4 mt-4 border-t border-slate-100 dark:border-slate-800">
+              <div className="lg:pt-4 lg:mt-4 lg:border-t border-slate-100 dark:border-slate-800">
                 <button 
                   onClick={() => setActiveTab('settings')}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'settings' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                  className={`flex-shrink-0 lg:w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'settings' ? 'bg-primary text-white font-bold shadow-lg shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
                 >
-                  <Settings className="w-5 h-5" /> Paramètres
+                  <Settings className="w-5 h-5" /> <span className="whitespace-nowrap">Paramètres</span>
                 </button>
               </div>
             </nav>
@@ -725,17 +801,17 @@ export const Admin = () => {
                           <td className="px-8 py-6">
                             <div className="flex items-center gap-3">
                               <div className="w-10 h-10 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center text-primary font-black text-xs">
-                                {order.userName.charAt(0)}
+                                {order.user_name.charAt(0)}
                               </div>
                               <div>
-                                <p className="font-bold text-sm leading-none mb-1">{order.userName}</p>
-                                <p className="text-xs text-slate-400">{order.userEmail}</p>
+                                <p className="font-bold text-sm leading-none mb-1">{order.user_name}</p>
+                                <p className="text-xs text-slate-400">{order.user_email}</p>
                               </div>
                             </div>
                           </td>
                           <td className="px-8 py-6 text-sm text-slate-500 font-medium">
-                            {format(order.createdAt, 'dd MMM yyyy', { locale: fr })}
-                            <span className="block text-[10px] text-slate-400">{format(order.createdAt, 'HH:mm')}</span>
+                            {format(new Date(order.created_at), 'dd MMM yyyy', { locale: fr })}
+                            <span className="block text-[10px] text-slate-400">{format(new Date(order.created_at), 'HH:mm')}</span>
                           </td>
                           <td className="px-8 py-6 font-black text-slate-900 dark:text-white">
                             {order.total.toLocaleString()} CFA
@@ -1213,10 +1289,10 @@ export const Admin = () => {
                           <td className="px-8 py-6">
                             <div className="flex items-center gap-3">
                               <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center text-primary font-black text-xs">
-                                {u.displayName?.charAt(0) || u.email.charAt(0)}
+                                {u.display_name?.charAt(0) || u.email.charAt(0)}
                               </div>
                               <div>
-                                <p className="font-bold text-sm leading-none mb-1">{u.displayName || 'Sans nom'}</p>
+                                <p className="font-bold text-sm leading-none mb-1">{u.display_name || 'Sans nom'}</p>
                                 <p className="text-xs text-slate-400">{u.email}</p>
                               </div>
                             </div>
@@ -1227,7 +1303,7 @@ export const Admin = () => {
                             </span>
                           </td>
                           <td className="px-8 py-6 text-sm text-slate-500 font-medium">
-                            {u.createdAt ? format(new Date(u.createdAt), 'dd MMM yyyy', { locale: fr }) : 'N/A'}
+                            {u.created_at ? format(new Date(u.created_at), 'dd MMM yyyy', { locale: fr }) : 'N/A'}
                           </td>
                           <td className="px-8 py-6 text-right">
                             <div className="flex items-center justify-end gap-2">

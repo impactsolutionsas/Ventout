@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { db } from '../firebase';
-import { collection, query, where, getDocs, orderBy } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { Order } from '../types';
 import { Package, Clock, Truck, CheckCircle, XCircle, ChevronRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -9,7 +8,7 @@ import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 
 export const Profile = () => {
-  const { user, logout } = useAuth();
+  const { user, profile, logout } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -17,22 +16,21 @@ export const Profile = () => {
     const fetchOrders = async () => {
       if (!user) return;
       try {
-        const q = query(
-          collection(db, 'orders'),
-          where('userId', '==', user.uid),
-          orderBy('createdAt', 'desc')
-        );
-        const querySnapshot = await getDocs(q);
-        const ordersData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order));
+        const { data, error } = await supabase
+          .from('orders')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false });
+
+        if (error) throw error;
+        
+        const ordersData = data.map(order => ({ 
+          ...order, 
+          createdAt: new Date(order.created_at).getTime() 
+        } as Order));
         setOrders(ordersData);
       } catch (error: any) {
         console.error("Error fetching orders:", error);
-        if (error.code === 'permission-denied') {
-          console.error("Permission denied to fetch orders. Check Firestore rules.");
-        } else if (error.message.includes("offline")) {
-          // If offline persistence is enabled, Firestore might still return cached data
-          // but if it fails completely, we should show a message.
-        }
       } finally {
         setLoading(false);
       }
@@ -63,7 +61,7 @@ export const Profile = () => {
     }
   };
 
-  if (!user) return null;
+  if (!user || !profile) return null;
 
   return (
     <main className="max-w-7xl mx-auto px-6 py-10">
@@ -71,10 +69,10 @@ export const Profile = () => {
         <aside className="w-full md:w-80 flex-shrink-0">
           <div className="bg-white dark:bg-slate-900 rounded-3xl p-8 border border-slate-200 dark:border-primary/20 text-center">
             <div className="w-24 h-24 rounded-full overflow-hidden border-4 border-primary mx-auto mb-6">
-              <img src={user.photoURL || ''} alt={user.displayName || ''} className="w-full h-full object-cover" />
+              <img src={profile.photo_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(profile.display_name)}&background=random`} alt={profile.display_name} className="w-full h-full object-cover" />
             </div>
-            <h2 className="text-xl font-black uppercase italic">{user.displayName}</h2>
-            <p className="text-slate-500 text-sm mb-8">{user.email}</p>
+            <h2 className="text-xl font-black uppercase italic">{profile.display_name}</h2>
+            <p className="text-slate-500 text-sm mb-8">{profile.email}</p>
             <button 
               onClick={logout}
               className="w-full py-3 border-2 border-slate-200 dark:border-primary/20 rounded-xl font-bold text-sm hover:bg-primary hover:text-white hover:border-primary transition-all uppercase tracking-widest"
@@ -103,23 +101,25 @@ export const Profile = () => {
             <div className="space-y-6">
               {orders.map(order => (
                 <div key={order.id} className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-primary/20 overflow-hidden hover:shadow-lg transition-shadow">
-                  <div className="p-6 flex flex-wrap items-center justify-between gap-6 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-primary/10">
+                  <div className="p-4 md:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 md:gap-6 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-primary/10">
                     <div className="flex items-center gap-4">
-                      <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-primary/20">
+                      <div className="p-2 md:p-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-primary/20">
                         {getStatusIcon(order.status)}
                       </div>
                       <div>
-                        <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Commande #{order.id.slice(-6).toUpperCase()}</p>
-                        <p className="font-bold text-sm">{format(order.createdAt, 'dd MMMM yyyy', { locale: fr })}</p>
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Commande #{order.id.slice(-6).toUpperCase()}</p>
+                        <p className="font-bold text-xs md:text-sm">{format(order.createdAt, 'dd MMMM yyyy', { locale: fr })}</p>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Statut</p>
-                      <p className="font-black text-primary uppercase text-sm">{getStatusLabel(order.status)}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Total</p>
-                      <p className="font-black text-lg">{order.total.toLocaleString()} €</p>
+                    <div className="flex sm:flex-col justify-between w-full sm:w-auto sm:text-right gap-2">
+                      <div className="text-left sm:text-right">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Statut</p>
+                        <p className="font-black text-primary uppercase text-xs md:text-sm">{getStatusLabel(order.status)}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Total</p>
+                        <p className="font-black text-sm md:text-lg">{order.total.toLocaleString()} CFA</p>
+                      </div>
                     </div>
                   </div>
                   <div className="p-6">

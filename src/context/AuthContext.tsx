@@ -1,19 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  onAuthStateChanged, 
-  signInWithPopup, 
-  signOut, 
-  User,
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-  sendPasswordResetEmail,
-  updateProfile
-} from 'firebase/auth';
-import { auth, googleProvider, db } from '../firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { supabase, isSupabaseConfigured } from '../supabase';
+import { User } from '@supabase/supabase-js';
+
+interface Profile {
+  id: string;
+  email: string;
+  display_name: string;
+  photo_url: string;
+  role: 'admin' | 'user';
+  created_at: string;
+}
 
 interface AuthContextType {
   user: User | null;
+  profile: Profile | null;
   isAdmin: boolean;
   loading: boolean;
   login: () => Promise<void>;
@@ -27,60 +27,102 @@ const AuthContext = React.createContext<AuthContextType | null>(null);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setUser(user);
-      if (user) {
-        try {
-          // Check if user is admin in Firestore
-          const userDoc = await getDoc(doc(db, 'users', user.uid));
-          if (userDoc.exists()) {
-            const role = userDoc.data().role;
-            console.log(`User ${user.uid} role: ${role}`);
-            setIsAdmin(role === 'admin');
-          } else {
-            // Create user doc if it doesn't exist
-            const newUser = {
-              email: user.email,
+    if (!isSupabaseConfigured) {
+      setLoading(false);
+      return;
+    }
+
+    // Get initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        fetchProfile(session.user.id);
+      } else {
+        setLoading(false);
+      }
+    });
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const currentUser = session?.user ?? null;
+      setUser(currentUser);
+      if (currentUser) {
+        await fetchProfile(currentUser.id);
+      } else {
+        setProfile(null);
+        setIsAdmin(false);
+        setLoading(false);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const fetchProfile = async (userId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+
+      if (error) {
+        if (error.code === 'PGRST116') {
+          // Profile doesn't exist, create it
+          const { data: userData } = await supabase.auth.getUser();
+          if (userData.user) {
+            const newProfile = {
+              id: userId,
+              email: userData.user.email,
               role: 'user',
-              createdAt: Date.now(),
-              displayName: user.displayName || 'Utilisateur'
+              display_name: userData.user.user_metadata.display_name || 'Utilisateur',
+              photo_url: userData.user.user_metadata.avatar_url || '',
+              created_at: new Date().toISOString()
             };
-            await setDoc(doc(db, 'users', user.uid), newUser);
-            setIsAdmin(false);
+            const { data: insertedProfile, error: insertError } = await supabase
+              .from('profiles')
+              .insert([newProfile])
+              .select()
+              .single();
+            
+            if (!insertError && insertedProfile) {
+              setProfile(insertedProfile as Profile);
+              setIsAdmin(insertedProfile.role === 'admin');
+            }
           }
-        } catch (error: any) {
-          console.error("Firestore error in AuthContext:", error);
-          // If we can't read the user doc, we definitely aren't an admin
+        } else {
+          console.error("Supabase error in AuthContext:", error);
           setIsAdmin(false);
         }
       } else {
-        setIsAdmin(false);
+        setProfile(data as Profile);
+        setIsAdmin(data?.role === 'admin');
       }
+    } catch (error) {
+      console.error("Error fetching profile:", error);
+      setIsAdmin(false);
+    } finally {
       setLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, []);
+    }
+  };
 
   const login = async () => {
-    if (!import.meta.env.VITE_FIREBASE_API_KEY) {
-      alert("Configuration Firebase manquante. Veuillez ajouter votre clé API dans les paramètres de l'application.");
-      return;
-    }
-    try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (error: any) {
-      handleAuthError(error);
-    }
+    // Google Auth removed as requested
+    alert("La connexion Google a été désactivée. Veuillez utiliser votre email.");
   };
 
   const loginWithEmail = async (email: string, pass: string) => {
     try {
-      await signInWithEmailAndPassword(auth, email, pass);
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password: pass,
+      });
+      if (error) throw error;
     } catch (error: any) {
       handleAuthError(error);
       throw error;
@@ -89,17 +131,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const registerWithEmail = async (email: string, pass: string, name: string) => {
     try {
-      const result = await createUserWithEmailAndPassword(auth, email, pass);
-      await updateProfile(result.user, { displayName: name });
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password: pass,
+        options: {
+          data: {
+            display_name: name
+          }
+        }
+      });
+      if (error) throw error;
       
-      // Create user doc in Firestore
-      const newUser = {
-        email: email,
-        role: 'user',
-        createdAt: Date.now(),
-        displayName: name
-      };
-      await setDoc(doc(db, 'users', result.user.uid), newUser);
+      if (data.user) {
+        const newProfile = {
+          id: data.user.id,
+          email: email,
+          role: 'user',
+          display_name: name,
+          created_at: new Date().toISOString()
+        };
+        await supabase.from('profiles').insert([newProfile]);
+      }
     } catch (error: any) {
       handleAuthError(error);
       throw error;
@@ -108,7 +160,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const resetPassword = async (email: string) => {
     try {
-      await sendPasswordResetEmail(auth, email);
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
+      if (error) throw error;
     } catch (error: any) {
       handleAuthError(error);
       throw error;
@@ -117,26 +172,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const handleAuthError = (error: any) => {
     console.error("Auth error:", error);
-    if (error.code === 'auth/invalid-api-key') {
-      alert("Clé API Firebase invalide. Veuillez vérifier votre configuration.");
-    } else if (error.code === 'auth/configuration-not-found') {
-      alert("Configuration manquante : L'authentification Google n'est pas activée dans votre projet Firebase.\n\nAction requise :\n1. Allez dans la console Firebase\n2. Authentication > Sign-in method\n3. Cliquez sur 'Ajouter un fournisseur'\n4. Sélectionnez 'Google' et activez-le.");
-    } else if (error.code === 'auth/unauthorized-domain') {
-      alert(`Domaine non autorisé : Ce domaine (${window.location.hostname}) n'est pas autorisé dans votre console Firebase.\n\nAction requise :\n1. Allez dans la console Firebase\n2. Authentication > Settings > Authorized domains\n3. Ajoutez "${window.location.hostname}" à la liste.`);
-    } else if (error.code === 'auth/popup-blocked') {
-      alert("Le popup de connexion a été bloqué par votre navigateur. Veuillez autoriser les popups pour ce site.");
-    } else if (error.code === 'auth/popup-closed-by-user' || error.code === 'auth/cancelled-popup-request') {
-      console.log("Login popup closed by user");
-    } else if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
-      alert("Email ou mot de passe incorrect.");
-    } else if (error.code === 'auth/email-already-in-use') {
-      alert("Cet email est déjà utilisé par un autre compte.");
-    } else if (error.code === 'auth/weak-password') {
-      alert("Le mot de passe est trop faible (6 caractères minimum).");
-    } else if (error.code === 'auth/invalid-email') {
-      alert("Format d'email invalide.");
-    } else if (error.code === 'auth/cancelled-popup-request') {
-      console.log("Login popup closed by user");
+    if (error.message?.includes("provider is not enabled")) {
+      alert("L'authentification Google n'est pas activée dans votre tableau de bord Supabase. Veuillez l'activer dans Authentification > Providers > Google, ou utilisez la connexion par email.");
     } else {
       alert(`Erreur d'authentification : ${error.message}`);
     }
@@ -144,7 +181,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async () => {
     try {
-      await signOut(auth);
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
     } catch (error) {
       console.error("Logout failed", error);
     }
@@ -153,6 +191,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   return (
     <AuthContext.Provider value={{ 
       user, 
+      profile,
       isAdmin, 
       loading, 
       login, 

@@ -21,21 +21,22 @@ export interface CartItem extends Product {
 
 export interface Order {
   id: string;
-  userId: string;
-  userName: string;
-  userEmail: string;
+  user_id: string;
+  user_name: string;
+  user_email: string;
   items: CartItem[];
   total: number;
   status: 'pending' | 'processing' | 'shipped' | 'delivered' | 'cancelled';
-  paymentMethod: 'cod' | 'card';
-  shippingAddress: {
+  payment_method: 'cod' | 'card';
+  shipping_address: {
     firstName: string;
     lastName: string;
     address: string;
     city: string;
     phone: string;
   };
-  createdAt: number;
+  created_at: string;
+  createdAt?: number; // Keep for compatibility if needed during transition
 }
 
 export interface Category {
@@ -48,10 +49,10 @@ export interface Category {
 export interface UserProfile {
   id: string;
   email: string;
-  displayName: string;
-  photoURL?: string;
+  display_name: string;
+  photo_url?: string;
   role: 'admin' | 'user';
-  createdAt: number;
+  created_at: string;
 }
 
 export interface AppSettings {

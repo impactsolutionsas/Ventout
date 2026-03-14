@@ -90,24 +90,7 @@ export const Login = () => {
             </button>
           </form>
 
-          <div className="relative my-10">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-slate-200 dark:border-primary/10"></div>
-            </div>
-            <div className="relative flex justify-center text-[10px] font-black uppercase tracking-widest">
-              <span className="bg-white dark:bg-slate-900 px-4 text-slate-400">Ou continuer avec</span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4">
-            <button 
-              onClick={handleGoogleLogin}
-              className="flex items-center justify-center gap-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-primary/10 py-4 rounded-2xl font-bold text-sm hover:bg-slate-100 dark:hover:bg-slate-700 transition-all"
-            >
-              <Chrome className="w-5 h-5" />
-              Google
-            </button>
-          </div>
+          {/* Google Auth removed */}
 
           <p className="mt-10 text-center text-sm text-slate-500">
             Pas encore de compte ?{' '}

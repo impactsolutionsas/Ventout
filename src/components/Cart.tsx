@@ -28,7 +28,8 @@ export const Cart = () => {
       
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
         <div className="lg:col-span-8">
-          <div className="overflow-hidden bg-white dark:bg-slate-900 border border-slate-200 dark:border-primary/20 rounded-xl">
+          {/* Desktop Table View */}
+          <div className="hidden md:block overflow-hidden bg-white dark:bg-slate-900 border border-slate-200 dark:border-primary/20 rounded-xl">
             <table className="w-full text-left border-collapse">
               <thead className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-primary/10">
                 <tr>
@@ -90,6 +91,53 @@ export const Cart = () => {
                 ))}
               </tbody>
             </table>
+          </div>
+
+          {/* Mobile Card View */}
+          <div className="md:hidden space-y-4">
+            {items.map((item) => (
+              <div key={item.id} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-primary/20 rounded-2xl p-4 shadow-sm">
+                <div className="flex gap-4 mb-4">
+                  <div className="h-24 w-24 flex-shrink-0 bg-slate-50 dark:bg-slate-800 rounded-xl p-2 border border-slate-100 dark:border-primary/10">
+                    <img src={item.image} alt={item.name} className="w-full h-full object-contain" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex justify-between items-start gap-2">
+                      <h3 className="font-bold text-slate-900 dark:text-white text-sm line-clamp-2">{item.name}</h3>
+                      <button 
+                        onClick={() => removeItem(item.id)}
+                        className="text-slate-400 hover:text-primary transition-colors flex-shrink-0"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-500 uppercase font-semibold mt-1">{item.brand}</p>
+                    <p className="font-bold text-primary mt-2">{item.price.toLocaleString()} CFA</p>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between pt-4 border-t border-slate-100 dark:border-primary/5">
+                  <div className="flex items-center border border-slate-200 dark:border-primary/20 rounded-full p-1 bg-slate-50 dark:bg-slate-800">
+                    <button 
+                      onClick={() => updateQuantity(item.id, item.quantity - 1)}
+                      className="h-8 w-8 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full transition-colors"
+                    >
+                      <Minus className="w-3 h-3" />
+                    </button>
+                    <span className="w-10 text-center text-sm font-bold">{item.quantity}</span>
+                    <button 
+                      onClick={() => updateQuantity(item.id, item.quantity + 1)}
+                      className="h-8 w-8 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full transition-colors"
+                    >
+                      <Plus className="w-3 h-3" />
+                    </button>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Sous-total</p>
+                    <p className="font-black text-sm">{(item.price * item.quantity).toLocaleString()} CFA</p>
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
 

@@ -3,10 +3,8 @@ import { useSearchParams, Link } from 'react-router-dom';
 import { CATEGORIES, PRODUCTS } from '../constants';
 import { ShoppingCart, Filter, ChevronRight, Search, Loader2 } from 'lucide-react';
 import { useCartStore } from '../store';
-import { db } from '../firebase';
-import { collection, getDocs, onSnapshot } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { Product, Category } from '../types';
-import { handleFirestoreError, OperationType } from '../utils/firestore-errors';
 
 export const Shop = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -27,35 +25,54 @@ export const Shop = () => {
   useEffect(() => {
     setLoading(true);
 
-    const unsubProducts = onSnapshot(collection(db, 'products'), 
-      (snap) => {
-        const productsData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product));
-        setProducts(productsData.length > 0 ? productsData : PRODUCTS);
-        setLoading(false);
-      },
-      (err) => {
-        console.error("Error fetching products:", err);
+    const fetchData = async () => {
+      // Fetch Products
+      const { data: productsData, error: productsError } = await supabase
+        .from('products')
+        .select('*');
+      
+      if (productsError) {
+        console.error("Error fetching products:", productsError);
         setProducts(PRODUCTS);
-        handleFirestoreError(err, OperationType.GET, 'products');
-        setLoading(false);
+      } else {
+        setProducts(productsData && productsData.length > 0 ? productsData : PRODUCTS);
       }
-    );
 
-    const unsubCategories = onSnapshot(collection(db, 'categories'), 
-      (snap) => {
-        const catsData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Category));
-        setCategories(catsData.length > 0 ? catsData : CATEGORIES);
-      },
-      (err) => {
-        console.error("Error fetching categories:", err);
+      // Fetch Categories
+      const { data: catsData, error: catsError } = await supabase
+        .from('categories')
+        .select('*');
+      
+      if (catsError) {
+        console.error("Error fetching categories:", catsError);
         setCategories(CATEGORIES);
-        handleFirestoreError(err, OperationType.GET, 'categories');
+      } else {
+        setCategories(catsData && catsData.length > 0 ? catsData : CATEGORIES);
       }
-    );
+
+      setLoading(false);
+    };
+
+    fetchData();
+
+    // Set up real-time subscriptions
+    const productsChannel = supabase
+      .channel('shop-products-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, (payload) => {
+        fetchData();
+      })
+      .subscribe();
+
+    const categoriesChannel = supabase
+      .channel('shop-categories-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, (payload) => {
+        fetchData();
+      })
+      .subscribe();
 
     return () => {
-      unsubProducts();
-      unsubCategories();
+      supabase.removeChannel(productsChannel);
+      supabase.removeChannel(categoriesChannel);
     };
   }, []);
 
@@ -90,6 +107,8 @@ export const Shop = () => {
     );
   }
 
+  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
+
   return (
     <main className="max-w-7xl mx-auto w-full px-6 py-8">
       <nav className="flex items-center gap-2 text-sm text-slate-500 mb-8">
@@ -98,9 +117,22 @@ export const Shop = () => {
         <span className="text-slate-900 dark:text-slate-100 font-medium">Catalogue</span>
       </nav>
 
+      <div className="flex lg:hidden items-center justify-between mb-6">
+        <button 
+          onClick={() => setIsFiltersOpen(!isFiltersOpen)}
+          className="flex items-center gap-2 px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl font-bold text-sm"
+        >
+          <Filter className="w-4 h-4" />
+          Filtres
+        </button>
+        <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">
+          {filteredProducts.length} Produits
+        </p>
+      </div>
+
       <div className="flex flex-col lg:flex-row gap-8">
-        <aside className="w-full lg:w-64 flex-shrink-0">
-          <div className="sticky top-24 space-y-8">
+        <aside className={`w-full lg:w-64 flex-shrink-0 ${isFiltersOpen ? 'block' : 'hidden lg:block'}`}>
+          <div className="lg:sticky lg:top-24 space-y-8 bg-white dark:bg-slate-950 p-6 lg:p-0 rounded-3xl lg:rounded-none border border-slate-100 dark:border-primary/10 lg:border-none shadow-xl lg:shadow-none mb-8 lg:mb-0">
             <div>
               <h3 className="mb-4 text-sm font-bold uppercase tracking-wider text-slate-900 dark:text-white">Catégories</h3>
               <ul className="space-y-3">
@@ -223,29 +255,29 @@ export const Shop = () => {
           )}
           
           {filteredProducts.length > 0 ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
               {filteredProducts.map((product) => (
-              <div key={product.id} className="group relative flex flex-col rounded-xl bg-white dark:bg-slate-900 p-4 shadow-sm transition-all hover:shadow-xl border border-slate-100 dark:border-primary/10">
-                <div className="relative mb-4 aspect-square overflow-hidden rounded-lg bg-slate-100 dark:bg-slate-800">
+              <div key={product.id} className="group relative flex flex-col rounded-xl bg-white dark:bg-slate-900 p-3 md:p-4 shadow-sm transition-all hover:shadow-xl border border-slate-100 dark:border-primary/10">
+                <div className="relative mb-3 md:mb-4 aspect-square overflow-hidden rounded-lg bg-slate-100 dark:bg-slate-800">
                   <img src={product.image} alt={product.name} className="h-full w-full object-contain transition-transform duration-500 group-hover:scale-110" />
                   {product.new && (
-                    <span className="absolute left-2 top-2 rounded bg-primary px-2 py-1 text-[10px] font-bold text-white uppercase">New</span>
+                    <span className="absolute left-1 top-1 md:left-2 md:top-2 rounded bg-primary px-1.5 md:px-2 py-0.5 md:py-1 text-[8px] md:text-[10px] font-bold text-white uppercase">New</span>
                   )}
                 </div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{product.brand}</p>
-                <Link to={`/product/${product.id}`} className="mt-1 text-sm font-semibold group-hover:text-primary transition-colors line-clamp-2 h-10">
+                <p className="text-[8px] md:text-[10px] font-bold uppercase tracking-widest text-slate-400">{product.brand}</p>
+                <Link to={`/product/${product.id}`} className="mt-1 text-[10px] md:text-sm font-semibold group-hover:text-primary transition-colors line-clamp-2 h-8 md:h-10">
                   {product.name}
                 </Link>
-                <div className="mt-auto pt-4 flex items-center justify-between">
+                <div className="mt-auto pt-2 md:pt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
                   <div className="flex flex-col">
-                    {product.oldPrice && <span className="text-xs text-slate-400 line-through">{product.oldPrice.toLocaleString()} CFA</span>}
-                    <span className="text-lg font-bold">{product.price.toLocaleString()} CFA</span>
+                    {product.oldPrice && <span className="text-[8px] md:text-xs text-slate-400 line-through">{product.oldPrice.toLocaleString()} CFA</span>}
+                    <span className="text-sm md:text-lg font-bold">{product.price.toLocaleString()} CFA</span>
                   </div>
                   <button 
                     onClick={() => addItem(product)}
-                    className="flex size-10 items-center justify-center rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors"
+                    className="flex size-8 md:size-10 items-center justify-center rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors"
                   >
-                    <ShoppingCart className="w-5 h-5" />
+                    <ShoppingCart className="w-4 h-4 md:w-5 md:h-5" />
                   </button>
                 </div>
               </div>
