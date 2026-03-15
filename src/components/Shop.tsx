@@ -21,6 +21,7 @@ export const Shop = () => {
   const inStockOnly = searchParams.get('stock') === 'true';
   
   const addItem = useCartStore((state) => state.addItem);
+  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -106,8 +107,6 @@ export const Shop = () => {
       </div>
     );
   }
-
-  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
 
   return (
     <main className="max-w-7xl mx-auto w-full px-6 py-8">

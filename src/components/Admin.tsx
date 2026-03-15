@@ -11,7 +11,6 @@ import {
   ChevronRight, MoreVertical, Filter, Download, Loader2,
   Tag, Layers, Monitor, Play, Eye, EyeOff
 } from 'lucide-react';
-import socket from '../socket';
 import { UserProfile, AppSettings } from '../types';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { format } from 'date-fns';
@@ -65,22 +64,25 @@ export const Admin = () => {
   const [newProduct, setNewProduct] = useState<Partial<Product>>({
     name: '',
     price: 0,
+    oldPrice: undefined,
     category: 'cuisine',
     brand: '',
     description: '',
     image: 'https://images.unsplash.com/photo-1584622650111-993a426fbf0a?auto=format&fit=crop&q=80&w=800',
     stock: 10,
+    featured: false,
+    new: false,
     specs: {}
   });
+  const [productSearch, setProductSearch] = useState('');
 
   const uploadToSupabase = async (file: File, bucket: string) => {
     const fileExt = file.name.split('.').pop();
-    const fileName = `${Math.random()}.${fileExt}`;
-    const filePath = `${fileName}`;
+    const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
 
-    const { error: uploadError, data } = await supabase.storage
+    const { error: uploadError } = await supabase.storage
       .from(bucket)
-      .upload(filePath, file);
+      .upload(fileName, file);
 
     if (uploadError) {
       throw uploadError;
@@ -88,65 +90,47 @@ export const Admin = () => {
 
     const { data: { publicUrl } } = supabase.storage
       .from(bucket)
-      .getPublicUrl(filePath);
+      .getPublicUrl(fileName);
 
     return publicUrl;
   };
 
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setUploading(true);
-    try {
-      const url = await uploadToSupabase(file, 'products');
-      setNewProduct(prev => ({ ...prev, image: url }));
-      alert("Image du produit téléchargée !");
-    } catch (error) {
-      console.error("Upload error:", error);
-      alert("Erreur lors du téléchargement");
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleCategoryImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setUploading(true);
-    try {
-      const url = await uploadToSupabase(file, 'categories');
-      setNewCategory(prev => ({ ...prev, image: url }));
-      alert("Image de catégorie téléchargée !");
-    } catch (error) {
-      console.error("Upload error:", error);
-      alert("Erreur lors du téléchargement");
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!isAdmin) return;
-
-    socket.on('order_notification', (order) => {
-      setNotifications(prev => [order, ...prev]);
-      // Refresh orders list
-      setOrders(prev => {
-        // Avoid duplicates if the order is already there
-        if (prev.find(o => o.id === order.id)) return prev;
-        return [order, ...prev];
-      });
-      // Show discreet toast
-      setShowToast(order);
-      setTimeout(() => setShowToast(null), 5000);
+  const fileToDataUrl = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
     });
+  };
 
-    return () => {
-      socket.off('order_notification');
-    };
-  }, [isAdmin]);
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>, target: 'product' | 'category') => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    try {
+      const bucket = target === 'product' ? 'products' : 'categories';
+      const url = await uploadToSupabase(file, bucket);
+      if (target === 'product') {
+        setNewProduct(prev => ({ ...prev, image: url }));
+      } else {
+        setNewCategory(prev => ({ ...prev, image: url }));
+      }
+    } catch (error: any) {
+      console.warn('Storage upload failed, using data URL fallback:', error.message);
+      // Fallback: convert to data URL if bucket doesn't exist
+      const dataUrl = await fileToDataUrl(file);
+      if (target === 'product') {
+        setNewProduct(prev => ({ ...prev, image: dataUrl }));
+      } else {
+        setNewCategory(prev => ({ ...prev, image: dataUrl }));
+      }
+    } finally {
+      setUploading(false);
+    }
+  };
+
 
   const fetchData = async () => {
     if (!isAdmin) return;
@@ -184,20 +168,16 @@ export const Admin = () => {
         .select('*');
       if (catsData) setCategories(catsData.length > 0 ? catsData : CATEGORIES);
 
-      // Fetch Settings
-      const { data: genSettings } = await supabase
+      // Fetch Settings — all rows at once to avoid multiple requests
+      const { data: allSettings } = await supabase
         .from('settings')
-        .select('content')
-        .eq('id', 'general')
-        .single();
-      if (genSettings) setSettings(genSettings.content as AppSettings);
-
-      const { data: frontSettings } = await supabase
-        .from('settings')
-        .select('content')
-        .eq('id', 'frontend')
-        .single();
-      if (frontSettings) setFrontendContent(frontSettings.content as FrontendContent);
+        .select('id, content');
+      if (allSettings) {
+        const gen = allSettings.find(s => s.id === 'general');
+        if (gen) setSettings(gen.content as AppSettings);
+        const front = allSettings.find(s => s.id === 'frontend');
+        if (front) setFrontendContent(front.content as FrontendContent);
+      }
 
     } catch (error) {
       console.error("Error fetching admin data:", error);
@@ -211,7 +191,15 @@ export const Admin = () => {
 
     // Real-time subscriptions
     const channels = [
-      supabase.channel('admin-orders').on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, fetchData).subscribe(),
+      supabase.channel('admin-orders').on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => {
+        fetchData();
+        if (payload.eventType === 'INSERT' && payload.new) {
+          const newOrder = payload.new;
+          setNotifications(prev => [newOrder, ...prev]);
+          setShowToast(newOrder);
+          setTimeout(() => setShowToast(null), 5000);
+        }
+      }).subscribe(),
       supabase.channel('admin-products').on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, fetchData).subscribe(),
       supabase.channel('admin-profiles').on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, fetchData).subscribe(),
       supabase.channel('admin-categories').on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, fetchData).subscribe(),
@@ -261,18 +249,32 @@ export const Admin = () => {
     try {
       // Seed Categories
       for (const category of CATEGORIES) {
-        const { id, ...catData } = category;
         await supabase.from('categories').upsert({
-          ...catData,
+          id: category.id,
+          name: category.name,
+          description: category.description,
+          image: category.image,
           created_at: new Date().toISOString()
         });
       }
 
       // Seed Products
       for (const product of PRODUCTS) {
-        const { id, ...productData } = product;
-        await supabase.from('products').insert({
-          ...productData,
+        await supabase.from('products').upsert({
+          id: product.id,
+          name: product.name,
+          description: product.description,
+          price: product.price,
+          old_price: product.oldPrice || null,
+          category: product.category,
+          brand: product.brand,
+          image: product.image,
+          stock: product.stock,
+          featured: product.featured ?? false,
+          new: product.new ?? false,
+          rating: product.rating,
+          reviews_count: product.reviewsCount,
+          specs: product.specs,
           created_at: new Date().toISOString()
         });
       }
@@ -293,10 +295,7 @@ export const Admin = () => {
     try {
       const { error } = await supabase
         .from('profiles')
-        .update({
-          role: 'admin',
-          updated_at: new Date().toISOString()
-        })
+        .update({ role: 'admin' })
         .eq('id', user.id);
 
       if (error) throw error;
@@ -334,20 +333,11 @@ export const Admin = () => {
       <div className="max-w-4xl mx-auto px-6 py-20">
         <div className="bg-red-50 border border-red-200 rounded-3xl p-10 text-center">
           <XCircle className="w-16 h-16 text-red-600 mx-auto mb-6" />
-          <h2 className="text-3xl font-black uppercase italic mb-4">Erreur de Permissions Firestore</h2>
+          <h2 className="text-3xl font-black uppercase italic mb-4">Erreur de Permissions</h2>
           <p className="text-slate-600 mb-8 leading-relaxed">
-            Bien que vous soyez connecté, votre base de données Firestore refuse l'accès aux données. 
-            Cela est généralement dû à des règles de sécurité trop restrictives.
+            Bien que vous soyez connecté, la base de données refuse l'accès aux données.
+            Vérifiez que les politiques RLS de Supabase sont correctement configurées.
           </p>
-          <div className="bg-white p-6 rounded-2xl text-left border border-red-100 mb-8">
-            <p className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-4">Action Requise :</p>
-            <ol className="list-decimal list-inside space-y-3 text-sm text-slate-700">
-              <li>Ouvrez votre <strong>Console Firebase</strong>.</li>
-              <li>Allez dans <strong>Firestore Database</strong> &gt; <strong>Rules</strong>.</li>
-              <li>Copiez le contenu du fichier <code>firestore.rules</code> (à la racine de ce projet).</li>
-              <li>Collez-le dans la console et cliquez sur <strong>Publish</strong>.</li>
-            </ol>
-          </div>
           <button 
             onClick={() => window.location.reload()}
             className="bg-primary text-white px-8 py-3 rounded-xl font-bold uppercase tracking-widest hover:scale-105 transition-transform"
@@ -367,17 +357,32 @@ export const Admin = () => {
   };
 
   const chartData = orders.slice(0, 7).reverse().map(o => ({
-    name: format(o.createdAt, 'dd/MM'),
+    name: format(new Date(o.created_at), 'dd/MM'),
     total: o.total
   }));
+
+  const filteredProducts = products.filter(p => {
+    if (!productSearch) return true;
+    const q = productSearch.toLowerCase();
+    return p.name?.toLowerCase().includes(q) || p.brand?.toLowerCase().includes(q) || p.category?.toLowerCase().includes(q);
+  });
 
   const handleAddProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     setUploading(true);
     try {
       const productData = {
-        ...newProduct,
-        updated_at: new Date().toISOString()
+        name: newProduct.name,
+        description: newProduct.description,
+        price: newProduct.price,
+        old_price: newProduct.oldPrice || null,
+        category: newProduct.category,
+        brand: newProduct.brand,
+        image: newProduct.image,
+        stock: newProduct.stock,
+        featured: newProduct.featured ?? false,
+        new: newProduct.new ?? false,
+        specs: newProduct.specs || {},
       };
 
       if (editingProduct) {
@@ -391,9 +396,10 @@ export const Admin = () => {
         const { error } = await supabase
           .from('products')
           .insert([{
+            id: `prod-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             ...productData,
             created_at: new Date().toISOString(),
-            rating: 5,
+            rating: 0,
             reviews_count: 0
           }]);
         if (error) throw error;
@@ -404,11 +410,14 @@ export const Admin = () => {
       setNewProduct({
         name: '',
         price: 0,
+        oldPrice: undefined,
         category: categories[0]?.id || 'cuisine',
         brand: '',
         description: '',
-        image: 'https://images.unsplash.com/photo-1584622650111-993a426fbf0a?auto=format&fit=crop&q=80&w=800',
+        image: '',
         stock: 10,
+        featured: false,
+        new: false,
         specs: {}
       });
       fetchData();
@@ -423,21 +432,26 @@ export const Admin = () => {
   const handleAddCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
+      const categoryData = {
+        name: newCategory.name,
+        description: newCategory.description,
+        image: newCategory.image,
+      };
+
       if (editingCategory) {
         const { error } = await supabase
           .from('categories')
-          .update({
-            ...newCategory,
-            updated_at: new Date().toISOString()
-          })
+          .update(categoryData)
           .eq('id', editingCategory.id);
         if (error) throw error;
         alert("Catégorie mise à jour !");
       } else {
+        const slug = (newCategory.name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
         const { error } = await supabase
           .from('categories')
           .insert([{
-            ...newCategory,
+            id: slug || `cat-${Date.now()}`,
+            ...categoryData,
             created_at: new Date().toISOString()
           }]);
         if (error) throw error;
@@ -454,6 +468,11 @@ export const Admin = () => {
   };
 
   const deleteCategory = async (id: string) => {
+    const linkedProducts = products.filter(p => p.category === id);
+    if (linkedProducts.length > 0) {
+      alert(`Impossible de supprimer : ${linkedProducts.length} produit(s) utilisent cette catégorie. Réassignez-les d'abord.`);
+      return;
+    }
     if (!window.confirm("Supprimer cette catégorie ?")) return;
     try {
       const { error } = await supabase
@@ -465,6 +484,7 @@ export const Admin = () => {
       fetchData();
     } catch (error) {
       console.error("Error deleting category:", error);
+      alert("Erreur lors de la suppression de la catégorie");
     }
   };
 
@@ -502,12 +522,12 @@ export const Admin = () => {
 
     setUploading(true);
     try {
-      const url = await uploadToSupabase(file, 'slides');
+      const url = await uploadToSupabase(file, 'products');
       setNewSlide(prev => ({ ...prev, image: url }));
-      alert("Image du slide téléchargée !");
-    } catch (error) {
-      console.error("Upload error:", error);
-      alert("Erreur lors du téléchargement");
+    } catch (error: any) {
+      console.warn('Storage upload failed, using data URL fallback:', error.message);
+      const dataUrl = await fileToDataUrl(file);
+      setNewSlide(prev => ({ ...prev, image: dataUrl }));
     } finally {
       setUploading(false);
     }
@@ -523,6 +543,7 @@ export const Admin = () => {
       fetchData();
     } catch (error) {
       console.error("Error saving frontend content:", error);
+      alert("Erreur lors de la sauvegarde du contenu frontend");
     }
   };
 
@@ -581,11 +602,14 @@ export const Admin = () => {
     setNewProduct({
       name: product.name,
       price: product.price,
+      oldPrice: product.oldPrice,
       category: product.category,
       brand: product.brand,
       description: product.description,
       image: product.image,
       stock: product.stock,
+      featured: product.featured ?? false,
+      new: product.new ?? false,
       specs: product.specs
     });
     setIsAddingProduct(true);
@@ -737,8 +761,8 @@ export const Admin = () => {
 
               <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200 dark:border-primary/20 shadow-sm">
                 <h3 className="text-xl font-black uppercase italic mb-8">Ventes Récentes</h3>
-                <div className="h-[300px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
+                <div className="w-full" style={{ minHeight: 300, height: 300 }}>
+                  <ResponsiveContainer width="100%" height={300}>
                     <BarChart data={chartData}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                       <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#64748b'}} dy={10} />
@@ -862,11 +886,14 @@ export const Admin = () => {
                     setNewProduct({
                       name: '',
                       price: 0,
-                      category: 'cuisine',
+                      oldPrice: undefined,
+                      category: categories[0]?.id || 'cuisine',
                       brand: '',
                       description: '',
                       image: '',
                       stock: 10,
+                      featured: false,
+                      new: false,
                       specs: {}
                     });
                     setIsAddingProduct(true);
@@ -881,7 +908,7 @@ export const Admin = () => {
                 <div className="p-6 border-b border-slate-100 dark:border-primary/10 flex flex-col sm:flex-row gap-4 justify-between items-center">
                   <div className="relative w-full sm:w-96">
                     <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                    <input type="text" placeholder="Rechercher un produit..." className="w-full pl-12 pr-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border-none text-sm outline-none focus:ring-2 ring-primary/20" />
+                    <input type="text" placeholder="Rechercher un produit..." value={productSearch} onChange={e => setProductSearch(e.target.value)} className="w-full pl-12 pr-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border-none text-sm outline-none focus:ring-2 ring-primary/20" />
                   </div>
                   <div className="flex items-center gap-2">
                     <button className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl text-slate-500 hover:text-primary transition-colors">
@@ -905,7 +932,7 @@ export const Admin = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-primary/5">
-                      {products.map(product => (
+                      {filteredProducts.map(product => (
                         <tr key={product.id} className="group hover:bg-slate-50/50 dark:hover:bg-primary/5 transition-colors">
                           <td className="px-8 py-6">
                             <div className="flex items-center gap-4">
@@ -953,111 +980,6 @@ export const Admin = () => {
 
               {/* Product Modal */}
               <AnimatePresence>
-                {isAddingCategory && (
-                  <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
-                    <motion.div 
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      onClick={() => setIsAddingCategory(false)}
-                      className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
-                    />
-                    <motion.div 
-                      initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                      animate={{ opacity: 1, scale: 1, y: 0 }}
-                      exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                      className="relative w-full max-w-2xl bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
-                    >
-                      <div className="p-8 border-b border-slate-100 dark:border-primary/10 flex items-center justify-between bg-slate-50/50 dark:bg-primary/5">
-                        <div>
-                          <h3 className="text-2xl font-black uppercase italic tracking-tighter">
-                            {editingCategory ? 'Modifier la Catégorie' : 'Nouvelle Catégorie'}
-                          </h3>
-                          <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">Détails de la catégorie</p>
-                        </div>
-                        <button onClick={() => setIsAddingCategory(false)} className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl transition-colors">
-                          <XCircle className="w-6 h-6 text-slate-400" />
-                        </button>
-                      </div>
-
-                      <form onSubmit={handleAddCategory} className="flex-1 overflow-y-auto p-8 space-y-8">
-                        <div className="space-y-6">
-                          <div className="space-y-2">
-                            <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Image de la Catégorie</label>
-                            <div className="relative group">
-                              <div className="aspect-video rounded-3xl bg-slate-100 dark:bg-slate-800 border-2 border-dashed border-slate-200 dark:border-slate-700 flex flex-col items-center justify-center overflow-hidden relative">
-                                {newCategory.image ? (
-                                  <>
-                                    <img src={newCategory.image} alt="Preview" className="w-full h-full object-cover" />
-                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                      <label className="cursor-pointer bg-white text-slate-900 px-6 py-3 rounded-2xl font-bold text-sm flex items-center gap-2">
-                                        <Upload className="w-4 h-4" /> Changer
-                                        <input type="file" accept="image/*" className="hidden" onChange={handleCategoryImageUpload} />
-                                      </label>
-                                    </div>
-                                  </>
-                                ) : (
-                                  <label className="cursor-pointer flex flex-col items-center gap-4 p-10 text-center">
-                                    <div className="w-16 h-16 bg-white dark:bg-slate-700 rounded-2xl shadow-sm flex items-center justify-center">
-                                      <Upload className="w-8 h-8 text-primary" />
-                                    </div>
-                                    <p className="font-bold text-slate-900 dark:text-white">Télécharger une image</p>
-                                    <input type="file" accept="image/*" className="hidden" onChange={handleCategoryImageUpload} />
-                                  </label>
-                                )}
-                                {uploading && (
-                                  <div className="absolute inset-0 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-center z-10">
-                                    <Loader2 className="w-10 h-10 text-primary animate-spin" />
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="space-y-2">
-                            <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Nom de la Catégorie</label>
-                            <input 
-                              required 
-                              type="text" 
-                              className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" 
-                              value={newCategory.name} 
-                              onChange={e => setNewCategory({...newCategory, name: e.target.value})} 
-                            />
-                          </div>
-
-                          <div className="space-y-2">
-                            <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Description</label>
-                            <textarea 
-                              required 
-                              className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20 h-32 resize-none" 
-                              value={newCategory.description} 
-                              onChange={e => setNewCategory({...newCategory, description: e.target.value})}
-                            ></textarea>
-                          </div>
-                        </div>
-
-                        <div className="pt-8 border-t border-slate-100 dark:border-primary/10 flex justify-end gap-4">
-                          <button 
-                            type="button" 
-                            onClick={() => setIsAddingCategory(false)} 
-                            className="px-8 py-4 rounded-2xl font-bold text-sm uppercase tracking-widest text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                          >
-                            Annuler
-                          </button>
-                          <button 
-                            type="submit" 
-                            disabled={uploading}
-                            className="bg-primary text-white px-10 py-4 rounded-2xl font-bold text-sm uppercase tracking-widest shadow-xl shadow-primary/20 hover:scale-105 transition-transform disabled:opacity-50 disabled:hover:scale-100"
-                          >
-                            {editingCategory ? 'Mettre à jour' : 'Créer la Catégorie'}
-                          </button>
-                        </div>
-                      </form>
-                    </motion.div>
-                  </div>
-                )}
-              </AnimatePresence>
-              <AnimatePresence>
                 {isAddingProduct && (
                   <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
                     <motion.div 
@@ -1099,7 +1021,7 @@ export const Admin = () => {
                                       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                                         <label className="cursor-pointer bg-white text-slate-900 px-6 py-3 rounded-2xl font-bold text-sm flex items-center gap-2 hover:scale-105 transition-transform">
                                           <Upload className="w-4 h-4" /> Changer l'image
-                                          <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                                          <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, 'product')} />
                                         </label>
                                       </div>
                                     </>
@@ -1112,7 +1034,7 @@ export const Admin = () => {
                                         <p className="font-bold text-slate-900 dark:text-white">Cliquez pour télécharger</p>
                                         <p className="text-xs text-slate-500 mt-1">PNG, JPG ou WEBP (Max 5MB)</p>
                                       </div>
-                                      <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                                      <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, 'product')} />
                                     </label>
                                   )}
                                   {uploading && (
@@ -1155,11 +1077,31 @@ export const Admin = () => {
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                               <div className="space-y-2">
                                 <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Prix (CFA)</label>
-                                <input required type="number" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={newProduct.price} onChange={e => setNewProduct({...newProduct, price: Number(e.target.value)})} />
+                                <input required type="number" min="0" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={newProduct.price} onChange={e => setNewProduct({...newProduct, price: Number(e.target.value)})} />
                               </div>
                               <div className="space-y-2">
+                                <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Ancien Prix (CFA)</label>
+                                <input type="number" min="0" placeholder="Laisser vide si pas de promo" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={newProduct.oldPrice || ''} onChange={e => setNewProduct({...newProduct, oldPrice: e.target.value ? Number(e.target.value) : undefined})} />
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                              <div className="space-y-2">
                                 <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Stock Initial</label>
-                                <input required type="number" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={newProduct.stock} onChange={e => setNewProduct({...newProduct, stock: Number(e.target.value)})} />
+                                <input required type="number" min="0" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={newProduct.stock} onChange={e => setNewProduct({...newProduct, stock: Number(e.target.value)})} />
+                              </div>
+                              <div className="space-y-2">
+                                <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Options</label>
+                                <div className="flex items-center gap-4 py-4">
+                                  <label className="flex items-center gap-2 cursor-pointer">
+                                    <input type="checkbox" checked={newProduct.featured ?? false} onChange={e => setNewProduct({...newProduct, featured: e.target.checked})} className="w-4 h-4 rounded accent-primary" />
+                                    <span className="text-sm font-medium">En vedette</span>
+                                  </label>
+                                  <label className="flex items-center gap-2 cursor-pointer">
+                                    <input type="checkbox" checked={newProduct.new ?? false} onChange={e => setNewProduct({...newProduct, new: e.target.checked})} className="w-4 h-4 rounded accent-primary" />
+                                    <span className="text-sm font-medium">Nouveau</span>
+                                  </label>
+                                </div>
                               </div>
                             </div>
 
@@ -1231,7 +1173,8 @@ export const Admin = () => {
                         <h3 className="text-white font-bold text-xl">{category.name}</h3>
                       </div>
                     </div>
-                    <p className="text-slate-500 text-sm line-clamp-2 mb-6 h-10">{category.description}</p>
+                    <p className="text-slate-500 text-sm line-clamp-2 mb-2 h-10">{category.description}</p>
+                    <p className="text-xs font-bold text-slate-400 mb-4">{products.filter(p => p.category === category.id).length} produit(s)</p>
                     <div className="flex items-center gap-3">
                       <button 
                         onClick={() => {
@@ -1511,13 +1454,18 @@ export const Admin = () => {
 
                           <div className="space-y-2">
                             <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Image du Slide</label>
+                            {newSlide.image && (
+                              <div className="w-full h-40 rounded-2xl overflow-hidden bg-slate-100 dark:bg-slate-800 mb-2">
+                                <img src={newSlide.image} alt="Preview" className="w-full h-full object-cover" />
+                              </div>
+                            )}
                             <div className="flex gap-4">
                               <div className="flex-1">
                                 <input type="text" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20" value={newSlide.image} onChange={e => setNewSlide({...newSlide, image: e.target.value})} placeholder="URL de l'image" />
                               </div>
-                              <label className="cursor-pointer bg-slate-100 dark:bg-slate-800 px-6 rounded-2xl flex items-center justify-center hover:bg-slate-200 transition-colors">
-                                <Upload className="w-5 h-5 text-slate-500" />
-                                <input type="file" className="hidden" accept="image/*" onChange={handleSlideImageUpload} />
+                              <label className={`cursor-pointer bg-slate-100 dark:bg-slate-800 px-6 rounded-2xl flex items-center justify-center hover:bg-slate-200 transition-colors ${uploading ? 'opacity-50 pointer-events-none' : ''}`}>
+                                {uploading ? <Loader2 className="w-5 h-5 text-slate-500 animate-spin" /> : <Upload className="w-5 h-5 text-slate-500" />}
+                                <input type="file" className="hidden" accept="image/*" onChange={handleSlideImageUpload} disabled={uploading} />
                               </label>
                             </div>
                           </div>
@@ -1646,6 +1594,112 @@ export const Admin = () => {
           )}
         </div>
       </div>
+      {/* Category Modal — global level */}
+      <AnimatePresence>
+        {isAddingCategory && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsAddingCategory(false)}
+              className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-2xl bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+            >
+              <div className="p-8 border-b border-slate-100 dark:border-primary/10 flex items-center justify-between bg-slate-50/50 dark:bg-primary/5">
+                <div>
+                  <h3 className="text-2xl font-black uppercase italic tracking-tighter">
+                    {editingCategory ? 'Modifier la Catégorie' : 'Nouvelle Catégorie'}
+                  </h3>
+                  <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">Détails de la catégorie</p>
+                </div>
+                <button onClick={() => setIsAddingCategory(false)} className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl transition-colors">
+                  <XCircle className="w-6 h-6 text-slate-400" />
+                </button>
+              </div>
+
+              <form onSubmit={handleAddCategory} className="flex-1 overflow-y-auto p-8 space-y-8">
+                <div className="space-y-6">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Image de la Catégorie</label>
+                    <div className="relative group">
+                      <div className="aspect-video rounded-3xl bg-slate-100 dark:bg-slate-800 border-2 border-dashed border-slate-200 dark:border-slate-700 flex flex-col items-center justify-center overflow-hidden relative">
+                        {newCategory.image ? (
+                          <>
+                            <img src={newCategory.image} alt="Preview" className="w-full h-full object-cover" />
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                              <label className="cursor-pointer bg-white text-slate-900 px-6 py-3 rounded-2xl font-bold text-sm flex items-center gap-2">
+                                <Upload className="w-4 h-4" /> Changer
+                                <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, 'category')} />
+                              </label>
+                            </div>
+                          </>
+                        ) : (
+                          <label className="cursor-pointer flex flex-col items-center gap-4 p-10 text-center">
+                            <div className="w-16 h-16 bg-white dark:bg-slate-700 rounded-2xl shadow-sm flex items-center justify-center">
+                              <Upload className="w-8 h-8 text-primary" />
+                            </div>
+                            <p className="font-bold text-slate-900 dark:text-white">Télécharger une image</p>
+                            <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, 'category')} />
+                          </label>
+                        )}
+                        {uploading && (
+                          <div className="absolute inset-0 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-center z-10">
+                            <Loader2 className="w-10 h-10 text-primary animate-spin" />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Nom de la Catégorie</label>
+                    <input
+                      required
+                      type="text"
+                      className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20"
+                      value={newCategory.name}
+                      onChange={e => setNewCategory({...newCategory, name: e.target.value})}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Description</label>
+                    <textarea
+                      required
+                      className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl px-4 py-4 text-sm outline-none focus:ring-2 ring-primary/20 h-32 resize-none"
+                      value={newCategory.description}
+                      onChange={e => setNewCategory({...newCategory, description: e.target.value})}
+                    ></textarea>
+                  </div>
+                </div>
+
+                <div className="pt-8 border-t border-slate-100 dark:border-primary/10 flex justify-end gap-4">
+                  <button
+                    type="button"
+                    onClick={() => setIsAddingCategory(false)}
+                    className="px-8 py-4 rounded-2xl font-bold text-sm uppercase tracking-widest text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  >
+                    Annuler
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={uploading}
+                    className="bg-primary text-white px-10 py-4 rounded-2xl font-bold text-sm uppercase tracking-widest shadow-xl shadow-primary/20 hover:scale-105 transition-transform disabled:opacity-50 disabled:hover:scale-100"
+                  >
+                    {editingCategory ? 'Mettre à jour' : 'Créer la Catégorie'}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </main>
   );
 };

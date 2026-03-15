@@ -1,6 +1,6 @@
 {
   "name": "VENTOUT E-Commerce",
-  "description": "Plateforme de vente d'électroménager haut de gamme avec suivi de commande et tableau de bord administrateur.",
+  "description": "Plateforme de vente d'électroménager haut de gamme avec suivi de commande.",
   "requestFramePermissions": [
     "geolocation"
   ]

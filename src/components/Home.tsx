@@ -16,69 +16,77 @@ export const Home = () => {
   const [currentSlide, setCurrentSlide] = useState(0);
 
   useEffect(() => {
-    setLoading(true);
+    let isInitial = true;
 
-    const fetchData = async () => {
-      // Fetch Products
-      const { data: productsData, error: productsError } = await supabase
-        .from('products')
-        .select('*');
-      
-      if (productsError) {
-        console.error("Error fetching products:", productsError);
+    const fetchData = async (showLoader = false) => {
+      if (showLoader) setLoading(true);
+
+      try {
+        // Fetch Products
+        const { data: productsData, error: productsError } = await supabase
+          .from('products')
+          .select('*');
+
+        if (productsError) {
+          console.error("Error fetching products:", productsError);
+          setProducts(PRODUCTS);
+        } else {
+          setProducts(productsData && productsData.length > 0 ? productsData : PRODUCTS);
+        }
+
+        // Fetch Categories
+        const { data: catsData, error: catsError } = await supabase
+          .from('categories')
+          .select('*');
+
+        if (catsError) {
+          console.error("Error fetching categories:", catsError);
+          setCategories(CATEGORIES);
+        } else {
+          setCategories(catsData && catsData.length > 0 ? catsData : CATEGORIES);
+        }
+
+        // Fetch Frontend Settings
+        const { data: settingsData, error: settingsError } = await supabase
+          .from('settings')
+          .select('content')
+          .eq('id', 'frontend')
+          .single();
+
+        if (settingsError) {
+          console.error("Error fetching frontend settings:", settingsError);
+        } else if (settingsData) {
+          setFrontendContent(settingsData.content as FrontendContent);
+        }
+      } catch (err) {
+        console.error("Error fetching data:", err);
         setProducts(PRODUCTS);
-      } else {
-        setProducts(productsData && productsData.length > 0 ? productsData : PRODUCTS);
-      }
-
-      // Fetch Categories
-      const { data: catsData, error: catsError } = await supabase
-        .from('categories')
-        .select('*');
-      
-      if (catsError) {
-        console.error("Error fetching categories:", catsError);
         setCategories(CATEGORIES);
-      } else {
-        setCategories(catsData && catsData.length > 0 ? catsData : CATEGORIES);
+      } finally {
+        setLoading(false);
       }
-
-      // Fetch Frontend Settings
-      const { data: settingsData, error: settingsError } = await supabase
-        .from('settings')
-        .select('content')
-        .eq('id', 'frontend')
-        .single();
-      
-      if (settingsError) {
-        console.error("Error fetching frontend settings:", settingsError);
-      } else if (settingsData) {
-        setFrontendContent(settingsData.content as FrontendContent);
-      }
-
-      setLoading(false);
     };
 
-    fetchData();
+    fetchData(true);
 
     // Set up real-time subscriptions
     const productsChannel = supabase
       .channel('products-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, (payload) => {
-        fetchData(); // Refresh all for simplicity, or handle payload specifically
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+        fetchData();
       })
       .subscribe();
 
     const categoriesChannel = supabase
       .channel('categories-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, (payload) => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'categories' }, () => {
         fetchData();
       })
       .subscribe();
 
     const settingsChannel = supabase
       .channel('settings-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'settings', filter: 'id=eq.frontend' }, (payload) => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'settings', filter: 'id=eq.frontend' }, () => {
         fetchData();
       })
       .subscribe();

@@ -36,7 +36,6 @@ export interface Order {
     phone: string;
   };
   created_at: string;
-  createdAt?: number; // Keep for compatibility if needed during transition
 }
 
 export interface Category {

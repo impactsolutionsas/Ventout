@@ -24,11 +24,7 @@ export const Profile = () => {
 
         if (error) throw error;
         
-        const ordersData = data.map(order => ({ 
-          ...order, 
-          createdAt: new Date(order.created_at).getTime() 
-        } as Order));
-        setOrders(ordersData);
+        setOrders(data as Order[]);
       } catch (error: any) {
         console.error("Error fetching orders:", error);
       } finally {
@@ -61,7 +57,13 @@ export const Profile = () => {
     }
   };
 
-  if (!user || !profile) return null;
+  if (!user || !profile) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center">
+        <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <main className="max-w-7xl mx-auto px-6 py-10">
@@ -108,7 +110,7 @@ export const Profile = () => {
                       </div>
                       <div>
                         <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Commande #{order.id.slice(-6).toUpperCase()}</p>
-                        <p className="font-bold text-xs md:text-sm">{format(order.createdAt, 'dd MMMM yyyy', { locale: fr })}</p>
+                        <p className="font-bold text-xs md:text-sm">{format(new Date(order.created_at), 'dd MMMM yyyy', { locale: fr })}</p>
                       </div>
                     </div>
                     <div className="flex sm:flex-col justify-between w-full sm:w-auto sm:text-right gap-2">

@@ -4,7 +4,6 @@ import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabase';
 import { useNavigate } from 'react-router-dom';
 import { CheckCircle2, Truck, CreditCard, Wallet } from 'lucide-react';
-import socket from '../socket';
 
 export const Checkout = () => {
   const { items, total, clearCart } = useCartStore();
@@ -56,7 +55,7 @@ export const Checkout = () => {
 
       if (error) throw error;
 
-      socket.emit('new_order', { id: data.id, ...orderData });
+      // Supabase Realtime notifie automatiquement l'admin via postgres_changes
       setOrderPlaced(true);
       clearCart();
     } catch (error: any) {
